@@ -1,0 +1,50 @@
+version: 2
+
+project_name: s12ryt-ipv6
+
+builds:
+  - id: s12ryt-ipv6
+    main: ./cmd/s12ryt-ipv6
+    binary: s12ryt-ipv6
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+archives:
+  - id: release
+    ids:
+      - s12ryt-ipv6
+    formats:
+      - tar.gz
+      - binary
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64{{ else }}{{ .Arch }}{{ end }}
+    builds_info:
+      mode: 0755
+      mtime: '{{ .CommitDate }}'
+    files:
+      - install.sh
+      - README.md
+      - deploy/install.sh
+      - deploy/uninstall.sh
+      - deploy/systemd/s12ryt-ipv6.service
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
