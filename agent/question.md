@@ -168,7 +168,9 @@
 ## 17. VPS 全自動安裝與 Release
 
 - 在根目錄新增 `install.sh`，提供 GitHub Release 一鍵安裝與升級；既有 `deploy/install.sh` 保留為本機/offline binary 安裝入口。
-- GitHub Actions 同時支援推送 `v*` tag 與手動 `workflow_dispatch`。手動流程要求輸入未存在的 `vX.Y.Z` 語意版本，從使用者選定的 workflow ref 建立 tag；tag 已存在或格式不合法時拒絕。
+- GitHub Actions 同時支援推送 `v*` tag 與手動 `workflow_dispatch`。手動流程要求輸入 `vX.Y.Z` 語意版本，從使用者選定的 workflow ref 建立 tag；格式不合法時拒絕。
+- 手動流程遇到既有 tag 時，只有該 tag 指向目前 workflow 提交且尚無 GitHub Release 才可安全續跑；tag 指向其他提交或 Release 已存在時拒絕。發布時必須明確指定目前 tag，避免同一提交有多個 tag 時選錯版本。
+- 既有孤立 tag `v0.1.0`、`v0.1.1` 均保留；本次修復後立即以新 tag `v0.1.2` 建立並驗證 Release，不刪除或重寫既有 tag。
 - 採 GoReleaser 慣例命名，為 Linux `amd64`、`arm64` 同時發布 `tar.gz` 與裸 binary，並發布涵蓋全部資產的 `checksums.txt`。
 - 安裝器只支援公開 GitHub 儲存庫 `s12ryt/s12ryt-ipv6`，預設安裝 latest；可用 `VERSION=vX.Y.Z` 指定版本。
 - 可用 `DATA_DIR` 覆寫資料目錄，預設 `/etc/s12ryt-ipv6`。可選 `MANAGEMENT_PORT` 僅在明確提供時修改；未提供時保留既有設定，首次安裝使用 34466。修改必須透過專案 CLI 安全更新 YAML 並保留其他設定。
