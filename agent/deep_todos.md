@@ -15,3 +15,12 @@
 - [x] 完成繁中 React SPA 與元件/瀏覽器測試。
 - [x] 完成 production service 組裝、systemd、Docker、操作文件與 Linux 雙架構 build。
 - [x] 完成全量回歸、品質審查與交付報告；環境限制項已明確記錄。
+
+## 2026-08-03：VPS 全自動安裝與 Release
+
+- [x] 以 TDD 新增安全的管理埠設定 CLI。
+- [x] 以 TDD 實作 GitHub Release 一鍵安裝、升級、健康檢查與完整回滾。
+- [x] 建立 GoReleaser 與 tag/manual GitHub Actions 發布流程。
+- [x] 更新 systemd/offline installer 與繁中部署文件。
+- [x] 執行安裝器、發布設定、Go/前端及 Linux 雙架構回歸驗證。
+- [x] 更新治理紀錄並推送 GitHub。

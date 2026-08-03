@@ -57,3 +57,10 @@
 - 未完整驗證：Windows主機沒有Docker CLI，未執行Docker build/compose runtime；沒有Linux root/network namespace，未執行真實netlink/nftables integration；`go test -race`因PATH無C compiler（`gcc` not found）無法啟動。這些是環境限制，不得誤報為通過。
 - 使用者確認公開發布至 `https://github.com/s12ryt/s12ryt-ipv6`。本機初始化 `main`，依模組與測試契約建立 86 個原子提交；推送前常見私鑰/token格式掃描無命中，建置產物與Playwright暫存均由ignore規則排除。
 - GitHub首次推送已由本機與GitHub API交叉確認：209個追蹤檔案完整存在，遠端`main`與本機HEAD同為`4198ded6fe3fb7a8a61caf8789ebb41c024797c4`，工作樹乾淨且upstream設定完成。
+- 完成VPS一鍵安裝需求澄清並寫入`agent/question.md`第17節：GitHub Release latest/指定版本、Debian/Ubuntu與雙架構、SHA-256、交易升級/回滾、120秒健康檢查、首次密碼、active UFW開孔及明文HTTP風險。
+- 以TDD新增`config get-management-port`與`config set-management-port`：CLI透過同一service flock及ConfigStore原子讀寫管理埠；無效port在任何mutation前拒絕，內部錯誤固定去敏。
+- 以shell TDD新增根`install.sh`。RED依序涵蓋缺安裝器、交易健康失敗、既有服務停止失敗、固定安裝鎖、危險data path及備份失敗；GREEN後能偵測平台/架構、安裝依賴、解析latest或嚴格`vX.Y.Z`、HTTPS下載、精確checksum、交易安裝、健康失敗完整回滾、只對active UFW開孔、依本次啟動時間擷取首次密碼。
+- 安裝器採全機固定`/run/lock/s12ryt-ipv6-installer.lock`，依賴加入`util-linux/flock`；既有unit停不下來或任一備份失敗時，在覆寫binary/unit/config前中止。`deploy/install.sh`改為重用根安裝器的相同交易核心。
+- 新增GoReleaser v2與GitHub Actions release流程。手動dispatch先驗嚴格未存在版本、完成前端/Go/shell/GoReleaser檢查後才推tag；為避免tag push造成雙重發布，只有tag事件執行GoReleaser。Release同時提供Linux amd64/arm64裸binary、tar.gz與`checksums.txt`。
+- Release工具驗證：Bash與Dash安裝/發布契約測試及語法檢查通過；GoReleaser v2.17.1 `check`與snapshot release成功，兩架構archive均包含binary、根installer、offline installer、unit、移除腳本及README，裸binary雜湊與checksums一致。ShellCheck在本機不可用。
+- 本輪完整回歸：Go所有packages測試與vet通過；React 7 files/23 tests、ESLint、Vite build及web embed test通過；Linux amd64/arm64 binary與network/firewall integration test binaries交叉編譯通過；GitHub Actions與GoReleaser YAML可由解析器讀取。真實VPS/systemd/UFW、Linux root netlink/nftables與實際GitHub Release發布仍需遠端環境驗證。
