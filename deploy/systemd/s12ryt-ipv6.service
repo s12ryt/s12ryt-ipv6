@@ -1,0 +1,27 @@
+[Unit]
+Description=s12ryt IPv6 proxy node manager
+Documentation=https://github.com/s12ryt/s12ryt-ipv6
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/s12ryt-ipv6 serve --data-dir /etc/s12ryt-ipv6
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=90s
+UMask=0077
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths=/etc/s12ryt-ipv6
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
