@@ -13,6 +13,26 @@
 - 若宿主機其他 nftables base chain 採 drop policy，必須自行允許管理與代理流量；本程式只管理 `inet s12ryt_ipv6` table，不修改其他規則。
 - NAT64 是外部網路能力。公開 DNS64 resolver 只負責解析，不提供 NAT64 gateway。
 
+## VPS 一鍵安裝與升級
+
+安裝最新 GitHub Release：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/s12ryt/s12ryt-ipv6/main/install.sh | sudo sh
+```
+
+固定版本、自訂資料目錄與管理埠：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/s12ryt/s12ryt-ipv6/main/install.sh | sudo env VERSION=v1.2.3 DATA_DIR=/srv/s12ryt-ipv6 MANAGEMENT_PORT=45555 sh
+```
+
+安裝器僅支援 Debian 12/13、Ubuntu 24.04，以及 `amd64`、`arm64`。它會從 GitHub Release 下載檔案、核對 `checksums.txt`，再安裝並啟用 systemd 服務；重複執行即安全升級。若新版本未在 120 秒內回報 `healthy` 或 `degraded`，binary、systemd unit 與設定會回滾並重新驗證舊服務。
+
+`VERSION` 預設為 `latest`；未設定 `MANAGEMENT_PORT` 時，升級會保留既有管理埠，首次安裝使用 `34466`。安裝器只會在 UFW 已安裝且已啟用時新增實際管理埠規則，絕不啟用 UFW，也不修改 IPv6 route。首次管理密碼只會從本次服務啟動後的 journal 擷取並顯示一次；若未取得，請執行下方的密碼重設命令。
+
+管理介面仍是公網明文 HTTP。不要在未受信任網路直接暴露管理埠；應使用防火牆來源限制、VPN 或可信的反向代理安全通道。
+
 ## 從原始碼建置
 
 需要 Go 1.25、Node.js 24 與 npm。
@@ -44,9 +64,9 @@ sudo ./s12ryt-ipv6 serve --data-dir /etc/s12ryt-ipv6
 sudo s12ryt-ipv6 admin reset-password --data-dir /etc/s12ryt-ipv6
 ```
 
-## systemd
+## 離線 systemd 安裝
 
-建置 binary 後執行：
+建置 binary 後，可用封裝內的離線安裝器；它與一鍵安裝器共用停止、健康檢查與回滾流程：
 
 ```sh
 sudo sh deploy/install.sh ./s12ryt-ipv6
