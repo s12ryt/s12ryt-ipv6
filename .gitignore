@@ -1,0 +1,11 @@
+.cache/
+.playwright-mcp/
+bin/
+coverage/
+dist/
+node_modules/
+web/dist/
+web/coverage/
+web/*.tsbuildinfo
+*.exe
+*.test
