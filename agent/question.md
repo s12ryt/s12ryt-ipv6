@@ -164,3 +164,22 @@
 - 使用者確認建立公開儲存庫 `s12ryt/s12ryt-ipv6`。
 - 本機以 `main` 為預設分支，建立可審查的原子提交後推送。
 - 不覆蓋既有遠端歷史、不使用強制推送；若同名遠端已存在，先停止並檢查。
+
+## 17. VPS 全自動安裝與 Release
+
+- 在根目錄新增 `install.sh`，提供 GitHub Release 一鍵安裝與升級；既有 `deploy/install.sh` 保留為本機/offline binary 安裝入口。
+- GitHub Actions 同時支援推送 `v*` tag 與手動 `workflow_dispatch`。手動流程要求輸入未存在的 `vX.Y.Z` 語意版本，從使用者選定的 workflow ref 建立 tag；tag 已存在或格式不合法時拒絕。
+- 採 GoReleaser 慣例命名，為 Linux `amd64`、`arm64` 同時發布 `tar.gz` 與裸 binary，並發布涵蓋全部資產的 `checksums.txt`。
+- 安裝器只支援公開 GitHub 儲存庫 `s12ryt/s12ryt-ipv6`，預設安裝 latest；可用 `VERSION=vX.Y.Z` 指定版本。
+- 可用 `DATA_DIR` 覆寫資料目錄，預設 `/etc/s12ryt-ipv6`。可選 `MANAGEMENT_PORT` 僅在明確提供時修改；未提供時保留既有設定，首次安裝使用 34466。修改必須透過專案 CLI 安全更新 YAML 並保留其他設定。
+- 只支援 Debian 12/13、Ubuntu 24.04 與 `amd64`/`arm64`；其他系統或架構在修改現有安裝前拒絕。
+- 以 apt 自動安裝 `curl`、`ca-certificates`、`nftables` 與必要校驗工具，並要求 systemd 可用。不得自動安裝或啟用 UFW；只有 UFW 已存在且 active 時才新增實際管理 TCP 埠規則。
+- 管理埠變更時不自動刪除舊 UFW 規則，避免移除人工或其他服務共用規則；腳本需輸出清楚警告。
+- 所有 Release 下載使用 HTTPS。必須先下載對應版本資產與 `checksums.txt` 並以 SHA-256 驗證；缺少資產、缺少checksum或校驗失敗時，不得替換現有安裝。
+- 重複執行採安全升級：保留資料目錄，備份既有 binary、systemd unit 與本次會變更的 config。更新後一律 enable 並啟動服務。
+- 健康檢查使用本機 `http://127.0.0.1:<port>/healthz`，最多等待 120 秒；`healthy` 或 `degraded` 視為成功，`unhealthy`、格式錯誤、連線失敗或逾時均視為失敗。
+- 升級健康失敗時完整還原 binary、systemd unit與config，執行 daemon-reload、重新啟動舊版並再次檢查；不得留下半套升級。首次安裝失敗則停止服務並移除本次安裝的 binary/unit，但保留診斷輸出與資料目錄。
+- 第一次啟動前記錄時間，只從該次 systemd 啟動時間後的 journal 擷取 `initial admin password: ...`，最多等待 120 秒且只輸出到目前終端。找不到時不得擅自重設，只提示 `admin reset-password` 指令。
+- 安裝器不得建立或修改 IPv6 default route，也不得修改本程式以外的 nftables table。
+- README 提供 latest、指定版本、資料目錄及管理埠的一行安裝範例，並保留公網明文 HTTP 的醒目安全警告。
+- 驗收包含 shell 語法與可注入命令的安裝/升級/回滾測試、Go CLI 設定修改測試、GoReleaser config檢查、GitHub Actions YAML 靜態驗證，以及既有Go/前端完整回歸。
