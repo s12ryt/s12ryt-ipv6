@@ -1,0 +1,57 @@
+# 專案操作記錄
+
+## 2026-08-03
+
+- 確認工作區已被使用者清空，舊專案分析不再是實作依據。
+- 確認本機工具：Go `1.26.3 windows/amd64`、Node.js `24.11.1`、npm `11.7.0`、Python `3.13.13`。
+- 完成多輪需求澄清；使用者確認首版契約，詳見 `agent/question.md`。
+- 查閱 `things-go/go-socks5` 原始碼：內建 UDP relay 使用核心分配 port 且沒有每映射 idle 回收；決定僅沿用協商/認證/封包解析，以公開 custom handler 實作 TCP/UDP 資料路徑。
+- 選定模組化 Go 單體、React + TypeScript + Vite SPA、同源 JSON API + SSE、Linux 網路基礎設施介面化的架構方向。
+- 建立 Go CLI 與 React/Vite 測試骨架。RED 證據分別為缺少 `run` 與缺少 `App`；GREEN 後 Go 2 項、前端 1 項測試通過，前端 lint/build 通過。
+- `web/go.mod` 僅作工具邊界，避免根模組 `go test ./...` 掃描 `node_modules` 中第三方 Go 範例；前端不在執行時依賴 Go 子模組。
+- 完成設定、IPv6 資源與目的政策 TDD：支援 `/3-/128`、正規化與範本重疊拒絕、1-4096 容量、全零主機位、CSPRNG 固定地址、canonical 引用、釘選池、刷新 draining、嚴格 IPv4 特殊範圍與 IPv6/ULA/NAT64 防繞過政策。
+- YAML 設定採 schema version、KnownFields 嚴格解碼、可讀 duration、0600 同目錄暫存與 rename；預設值符合已確認契約。
+- 此輪完整 `go test ./...` 與 `go vet ./...` 通過；Windows `go test -race` 因未啟用 CGO 無法執行，留待 Linux/CGO 驗收。
+- 完成祕密與登入核心 TDD：0600 master key、AES-GCM 加密、CSPRNG 代理/管理憑證、Argon2id PHC 防資源濫用解析、單一 session、CSRF、每來源與全域滑動窗口限速；RED 均由缺少目標 API 引起，GREEN 後套件測試通過。
+- 完成事件日誌與統計 TDD。第一輪 RED 為缺少 `eventlog.New/Event` 與 `stats.NewRegistry/Save/Load`；GREEN 實作 JSONL 檔案/stdout、欄位白名單、註冊祕密去敏、輪替、清除稽核、mutex-safe 即時/累計計數及原子快照。第二輪 RED 為缺少 `ResetAll`，GREEN 後可在保留 active 計數下歸零全部累計值。
+- 此輪完整 `go test ./...` 與 `go vet ./...` 再次通過。`gopls` 未安裝，因此 LSP 診斷不可用；這是工具限制，後續仍以編譯、測試與 vet 驗證。
+- 修復預設 resolver 契約偏差：RED 證明原先使用一般 DoT `::1111/::1001/::8888/::8844`，GREEN 改為 Cloudflare `::64/::6400` 與 Google `::6464/::64` DNS64 專用 IPv6 位址。
+- 完成 `internal/dns64` TDD：resolver 端點順序故障轉移、raw DNS cache、正向 TTL 30 秒至 10 分鐘、負向 30 秒、每次 cache hit 重套目的政策、A 記錄 `/96` 本地合成、IPv4 literal、RFC 7050 類型探測與衝突來源、NAT64 立即/週期健康狀態。
+- 完成 `miekg/dns v1.1.72` DoT adapter；依文件與原始碼使用 `tcp6-tls`、literal IPv6 目的、TLS server name、可選 IPv6 source。測試以注入 exchange 驗證 A/AAAA、TTL、RCODE 與傳輸錯誤，不依賴公網。
+- DNS64 品質審查另發現公開 DNS64 可能先合成 `64:ff9b::/96`，導致自訂 prefix 無法使用；先建回歸測試，再允許有健康 NAT64 prefix 時從全數不可用 AAAA 繼續查 A 並以目前 prefix 重合成。手動 prefix 更新會先撤銷舊健康結果，重測成功後才可用。
+- DNS64 階段完成後 `go test ./...`、`go vet ./...` 通過，健康排程測試連跑 20 次通過。
+- 完成 `internal/network` 資源交易 TDD。第一輪 RED 為缺少 Kernel/Ownership/ResourceManager API；GREEN 後支援 address `/128`、local route + freebind、external 驗證、同批 DAD 平行等待與失敗回滾。第二輪 RED 補上 DAD 首錯取消、Reconcile/Release/Shutdown 與嚴格原子 YAML ownership store，GREEN 後可在啟動清理 stale owned 資源並修復 desired missing 資源，永不刪除 unowned 資源。
+- 完成 Linux netlink adapter：逐址模式等待核心 DAD（不用 NODAD），local route 使用 local table/RTN_LOCAL，TCP6/UDP6 bind 驗證套 SO_BINDTODEVICE，route 模式另套 IPV6_FREEBIND；非 Linux constructor 明確拒絕。
+- 完成 `internal/firewall` TDD：平台無關 manager 將管理 TCP、節點 TCP/UDP 與 relay 開孔正規化後交易式完整替換；Linux nftables backend 只管理 `inet s12ryt_ipv6`，單次 Flush 刪除/重建自有 table，絕不修改其他 table。診斷會保守列出其他 IPv4/IPv6/inet input base chain 的 policy-drop 與 drop verdict，但不自動覆蓋。
+- crash-consistency 審查先以 RED 證明 kernel mutation 早於 ownership 持久化，GREEN 改為先保存 intent 再變更 kernel。另一輪 RED 證明 rollback 清理失敗會遺失 ownership，GREEN 改為保留所有未能移除的地址/route，讓下次啟動仍可安全對帳；intent 保存失敗則保證 kernel 零修改。
+- 新增 `linux && integration` 的 root-only network namespace 測試，涵蓋真實 dummy link、address/DAD、local route/freebind、nftables 自有 table 建立與刪除。Windows 無法安全執行，但 integration test binaries 已在 Linux amd64/arm64 交叉編譯成功。
+- 網路/防火牆階段完成後，`go test ./...`、`go vet ./...`、`GOOS=linux GOARCH=amd64/arm64 go build ./...` 均通過；真實 Linux root/netns integration 執行保留至部署環境驗收。
+- 完成 `internal/proxy` TDD：mutex-safe round-robin IPv6 source lease 與刷新 draining、IPv6-only destination dialer、實際 TCP/UDP socket bind 的埠配置器、Linux SO_BINDTODEVICE/IPV6_FREEBIND system socket adapter。自動埠會逐一探測完整 transport 集合，wildcard/specific 衝突與失敗 rollback 均有測試。
+- 完成 HTTP Proxy CONNECT 與 absolute-form HTTP 轉送；Basic 認證採 constant-time 比對，移除代理認證 header，錯誤不洩漏 URL path/header/content。完成 SOCKS5 method/auth、TCP CONNECT、自訂 UDP ASSOCIATE 與 BIND 明確拒絕；UDP relay 使用指定埠池、動態防火牆、來源驗證、FRAG 拒絕、每 `client+destination` 固定來源、雙向 idle 更新及控制連線關閉回收。
+- 完成 mixed 同埠首位元分流、TCP tunnel 可選 idle timeout、逐節點 TCP/UDP 並行限制與協定 traffic metadata。各行為皆先由缺 API 或可重現缺陷形成 RED，再最小 GREEN。
+- 完成 `internal/node` TDD：節點建立/編輯/啟停/刪除、無認證風險確認、專用池刪除、正式協定 handler builder、listener runtime 與連線終止。相同 endpoints 更新會原子替換 handler、不重新 bind，並立即關閉舊連線；不同 endpoints 先啟動 replacement 再停止舊 runtime。
+- 新增防火牆協調器，交易式合併管理 TCP、各節點 TCP 與引用計數 UDP relay；舊 runtime 只可關閉與自身 endpoints 完全相符的世代，避免 replacement 規則被誤刪。backend 失敗不提交協調器狀態。
+- 生命週期審查修復兩項缺陷：停止後自動埠重啟會保存實際配置 port；舊 runtime 清理失敗時保留已上線 replacement，更新管理狀態並回報 `ErrPreviousRuntimeCleanup`，不再反向關掉新服務。
+- 代理/節點階段完成後，`go test ./... -count=1`、`go vet ./...`，以及明確設定 `GOOS=linux GOARCH=amd64/arm64 CGO_ENABLED=0` 的 `go build ./...` 均通過。
+- 完成 `internal/admin` 管理安全邊界 TDD：Argon2id 密碼初始化/修改/重設與嚴格原子檔案、單一 session cookie、CSRF、Origin、JSON content type/body limit、來源與全域登入限速、僅暴露三態的公開 healthz，以及登入保護的去敏 SSE。
+- 完成節點、IPv6 資源與操作 JSON API。所有 mutation 經 session/CSRF/Origin 保護並使用明確 DTO；內部錯誤回固定訊息。節點與資源變更只發布固定欄位 SSE，不攜帶帳密、session、CSRF 或任意 payload。
+- 完成 IPv6 資源完整 State 驗證與原子 YAML 持久化，以及正式 `ResourceCoordinator`。每次 mutation 在候選 Store 執行，依序 network reconcile、state save、live commit；任一步失敗都對帳回舊狀態。強制 draining 終止依 terminate、network、state 順序執行。
+- 完成 `OperationsCoordinator`：統計保存/歸零稽核、JSONL 尾端篩選、NAT64 runtime 更新與持久化失敗回滾、DoT resolver runtime 原子替換/cache清除與保存失敗回滾、健康聚合及連通性測試委派。設定新增可持久化的 canonical IPv6 `/96` `nat64_prefix`。
+- 完成 Unix control protocol/client與 `admin reset-password [--data-dir PATH]`。運行服務透過 0600 socket即時重設並撤銷 session；control無法連線時，只有取得同一非阻塞 service flock 才能離線直接更新。Control runtime保證先鎖後listen、逆序清理；訊息讀取硬限制4KB且回應嚴格解碼。
+- 管理階段完成後，`go test ./... -count=1`、`go vet ./...`、Linux amd64/arm64 `CGO_ENABLED=0 go build ./...` 與 admin Linux test binary交叉編譯均通過。Windows無法執行Linux flock/Unix socket及root網路整合測試，保留至Linux驗收。
+- 完成繁中 React SPA TDD：同源 API client將CSRF只保留於記憶體，登入、登出、session恢復與SSE採固定schema；總覽、節點CRUD/啟停/帳密、IPv6範本/固定地址/池/draining、NAT64/DoT/連通性/管理密碼、metadata日誌與統計歸零皆有元件測試。
+- 跨層審查修復刷新後CSRF遺失：已驗證的`GET /api/session`會輪替並回傳新CSRF，舊token立即失效；另補節點`authentication` DTO，使無認證與空白自動生成帳密可被明確區分。
+- SPA品質審查修復登入401錯誤文案與768-1024px版面溢出。前端最終為7個test files、23項測試全綠，ESLint與Vite production build通過。
+- Playwright以使用者提供的純Web開發頁搭配去敏API mock完成實際瀏覽器驗收：錯誤/正確登入、同源Origin、JSON與CSRF登出header、五個頁面、system/light/dark、375/768/1024/1025/1440皆無document/workspace水平溢出；桌面亮色與手機深色視覺檢查無遮擋，乾淨reload後console為0 errors。驗收截圖已刪除。
+- 完成宣告式 IPv6 入站與 runtime 資源同步 TDD：節點只保存 `inbound_mode/inbound_resource`，固定地址或入站池解析為具體 listeners；pool刷新會先上新listener，保留未變listener，舊listener停止accept但既有連線無限排空；防火牆失敗時新generation完整rollback。管理API與SPA已同步改為具名資源選擇。
+- 完成 SourcePool、出站與入站強制排空：來源lease可附著實際連線，force drain關閉指定舊來源的TCP/UDP mapping；多節點共用入站池由DrainTracker等待全部consumer完成，DrainQueue非阻塞回送ResourceCoordinator逐地址提交。自然與強制排空的stale callback安全no-op。
+- 完成加密節點 YAML state、PersistentManager 交易保存/補償、desired running狀態關機保存及啟動restore。帳密只以AES-GCM欄位保存；節點CRUD state-save失敗會恢復runtime與設定，專用pool只在節點state成功提交後清理。
+- 完成 production service 組裝：RunProduction先取得同一data-dir service flock；Service先預占雙棧management sockets，再初始化密碼、nft runtime、資源對帳與節點restore；背景執行HTTP/control、NAT64、drain queue、宿主位址週期刷新及30秒統計保存；正常停止依序nodes、network、firewall、stats、log。
+- 完成正式 policy/outbound/inbound/node pipeline：動態掃描宿主local與全部managed IPv6；具名fixed/pool出站round-robin；IPv6-only DoT/dialer；SOCKS/HTTP/mixed handler；UDP relay與nft動態開孔；RuntimeResourceSynchronizer交易同步policy/outbound/inbound/listeners。
+- 完成 production ConnectivityTester，管理頁會分別測DoT、原生IPv6、NAT64、每個fixed與非inbound pool代表來源；個別錯誤固定去敏且全部socket維持IPv6-only。
+- 修復啟動期兩項高風險問題：draining consumer會先參考持久desired running nodes，避免restore前誤完成；損壞resources/nodes狀態不再於management bind前阻止Build。損壞resource store進入preflight只讀保護，任何mutation在kernel/runtime動作前拒絕且不覆寫原檔；node錯誤延後restore回報degraded。
+- 修復崩潰殘留control socket：正式listener只移除Unix socket類型的stale路徑，regular file一律拒絕且保留。新增節點/更新帳密會即時註冊event logger去敏；宿主地址每60秒刷新，失敗保留舊政策並標degraded、成功恢復健康。
+- CLI空參數與`serve --data-dir`已接正式production runner及SIGTERM context；首次管理密碼只stdout一次。root Go module透過local replace嵌入nested webui build產物。
+- 新增Docker Node/Go多階段build、host network + NET_ADMIN Compose、systemd capability sandbox、安裝/移除腳本及繁中README。`.playwright-mcp/`已ignore且暫存檔清理。
+- 最終驗證：`go test ./... -count=1 -timeout=300s`與`go vet ./...`通過；web 7 files/23 tests、ESLint、TypeScript/Vite build及web embed test通過；Linux amd64/arm64 binary build通過；network/firewall `linux && integration` test binaries兩架構交叉編譯通過；shell `bash -n`、Compose YAML及Dockerfile/systemd靜態契約通過。
+- 未完整驗證：Windows主機沒有Docker CLI，未執行Docker build/compose runtime；沒有Linux root/network namespace，未執行真實netlink/nftables integration；`go test -race`因PATH無C compiler（`gcc` not found）無法啟動。這些是環境限制，不得誤報為通過。
