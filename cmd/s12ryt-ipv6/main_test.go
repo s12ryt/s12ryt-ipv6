@@ -172,3 +172,102 @@ func TestRunAdminResetPasswordRejectsInvalidFlags(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%q", exitCode, stderr.String())
 	}
 }
+
+func TestRunConfigGetsManagementPort(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	var dataDirectory string
+	dependencies := commandDependencies{
+		getManagementPort: func(_ context.Context, directory string) (uint16, error) {
+			dataDirectory = directory
+			return 45555, nil
+		},
+	}
+
+	exitCode := runWithDependencies([]string{"config", "get-management-port", "--data-dir", "/srv/s12ryt"}, &stdout, &stderr, dependencies)
+
+	if exitCode != 0 || dataDirectory != "/srv/s12ryt" || stderr.Len() != 0 {
+		t.Fatalf("exit=%d data-dir=%q stderr=%q", exitCode, dataDirectory, stderr.String())
+	}
+	if got := stdout.String(); got != "45555\n" {
+		t.Fatalf("stdout = %q, want management port", got)
+	}
+}
+
+func TestRunConfigSetsManagementPort(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	var dataDirectory string
+	var port uint16
+	dependencies := commandDependencies{
+		setManagementPort: func(_ context.Context, directory string, value uint16) error {
+			dataDirectory = directory
+			port = value
+			return nil
+		},
+	}
+
+	exitCode := runWithDependencies([]string{"config", "set-management-port", "--port", "45555", "--data-dir", "/srv/s12ryt"}, &stdout, &stderr, dependencies)
+
+	if exitCode != 0 || dataDirectory != "/srv/s12ryt" || port != 45555 || stderr.Len() != 0 {
+		t.Fatalf("exit=%d data-dir=%q port=%d stderr=%q", exitCode, dataDirectory, port, stderr.String())
+	}
+	if got := stdout.String(); got != "management port updated: 45555\n" {
+		t.Fatalf("stdout = %q", got)
+	}
+}
+
+func TestRunConfigRejectsInvalidManagementPortBeforeMutation(t *testing.T) {
+	for _, value := range []string{"0", "65536", "not-a-port"} {
+		t.Run(value, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			called := false
+			dependencies := commandDependencies{
+				setManagementPort: func(context.Context, string, uint16) error {
+					called = true
+					return nil
+				},
+			}
+
+			exitCode := runWithDependencies([]string{"config", "set-management-port", "--port", value}, &stdout, &stderr, dependencies)
+
+			if exitCode != 2 || called || stderr.Len() == 0 {
+				t.Fatalf("exit=%d called=%t stderr=%q", exitCode, called, stderr.String())
+			}
+		})
+	}
+}
+
+func TestRunConfigSanitizesManagementPortFailures(t *testing.T) {
+	tests := []struct {
+		name         string
+		args         []string
+		dependencies commandDependencies
+	}{
+		{
+			name: "get",
+			args: []string{"config", "get-management-port"},
+			dependencies: commandDependencies{getManagementPort: func(context.Context, string) (uint16, error) {
+				return 0, errors.New("secret config read detail")
+			}},
+		},
+		{
+			name: "set",
+			args: []string{"config", "set-management-port", "--port", "45555"},
+			dependencies: commandDependencies{setManagementPort: func(context.Context, string, uint16) error {
+				return errors.New("secret config write detail")
+			}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			exitCode := runWithDependencies(test.args, &stdout, &stderr, test.dependencies)
+			if exitCode != 1 || stdout.Len() != 0 || stderr.String() != "management port operation failed\n" {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", exitCode, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
