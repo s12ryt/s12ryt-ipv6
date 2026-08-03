@@ -1,0 +1,13 @@
+.git
+.gitignore
+.playwright-mcp
+.cache
+bin
+coverage
+data
+*.exe
+*.test
+web/node_modules
+web/dist
+web/coverage
+web/*.tsbuildinfo

@@ -1,0 +1,11 @@
+services:
+  s12ryt-ipv6:
+    build:
+      context: .
+    image: s12ryt-ipv6:local
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - ./data:/etc/s12ryt-ipv6
+    restart: unless-stopped
