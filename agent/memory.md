@@ -56,3 +56,4 @@
 - 最終驗證：`go test ./... -count=1 -timeout=300s`與`go vet ./...`通過；web 7 files/23 tests、ESLint、TypeScript/Vite build及web embed test通過；Linux amd64/arm64 binary build通過；network/firewall `linux && integration` test binaries兩架構交叉編譯通過；shell `bash -n`、Compose YAML及Dockerfile/systemd靜態契約通過。
 - 未完整驗證：Windows主機沒有Docker CLI，未執行Docker build/compose runtime；沒有Linux root/network namespace，未執行真實netlink/nftables integration；`go test -race`因PATH無C compiler（`gcc` not found）無法啟動。這些是環境限制，不得誤報為通過。
 - 使用者確認公開發布至 `https://github.com/s12ryt/s12ryt-ipv6`。本機初始化 `main`，依模組與測試契約建立 86 個原子提交；推送前常見私鑰/token格式掃描無命中，建置產物與Playwright暫存均由ignore規則排除。
+- GitHub首次推送已由本機與GitHub API交叉確認：209個追蹤檔案完整存在，遠端`main`與本機HEAD同為`4198ded6fe3fb7a8a61caf8789ebb41c024797c4`，工作樹乾淨且upstream設定完成。
