@@ -24,3 +24,6 @@
 - [x] 更新 systemd/offline installer 與繁中部署文件。
 - [x] 執行安裝器、發布設定、Go/前端及 Linux 雙架構回歸驗證。
 - [x] 更新治理紀錄並推送 GitHub。
+- [x] 以 RED 測試重現手動 workflow 只建立 tag、未建立 Release 的缺陷。
+- [x] 修復手動 workflow，使新 tag 或安全續跑的既有 tag 在同一次 run 直接發布。
+- [x] 建立並驗證 `v0.1.2` Release、checksums、雙架構 archive 與 ELF binary。

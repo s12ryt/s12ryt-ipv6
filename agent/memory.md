@@ -61,6 +61,9 @@
 - 以TDD新增`config get-management-port`與`config set-management-port`：CLI透過同一service flock及ConfigStore原子讀寫管理埠；無效port在任何mutation前拒絕，內部錯誤固定去敏。
 - 以shell TDD新增根`install.sh`。RED依序涵蓋缺安裝器、交易健康失敗、既有服務停止失敗、固定安裝鎖、危險data path及備份失敗；GREEN後能偵測平台/架構、安裝依賴、解析latest或嚴格`vX.Y.Z`、HTTPS下載、精確checksum、交易安裝、健康失敗完整回滾、只對active UFW開孔、依本次啟動時間擷取首次密碼。
 - 安裝器採全機固定`/run/lock/s12ryt-ipv6-installer.lock`，依賴加入`util-linux/flock`；既有unit停不下來或任一備份失敗時，在覆寫binary/unit/config前中止。`deploy/install.sh`改為重用根安裝器的相同交易核心。
-- 新增GoReleaser v2與GitHub Actions release流程。手動dispatch先驗嚴格未存在版本、完成前端/Go/shell/GoReleaser檢查後才推tag；為避免tag push造成雙重發布，只有tag事件執行GoReleaser。Release同時提供Linux amd64/arm64裸binary、tar.gz與`checksums.txt`。
+- 新增GoReleaser v2與GitHub Actions release流程。手動dispatch先驗證嚴格語意版本、完成前端/Go/shell/GoReleaser檢查後才建立tag，並在同一次workflow run直接執行GoReleaser。既有tag只有在指向目前提交且尚無Release時才可安全續跑；發布時以`GORELEASER_CURRENT_TAG`避免同一提交多tag時選錯版本。Release同時提供Linux amd64/arm64裸binary、tar.gz與`checksums.txt`。
 - Release工具驗證：Bash與Dash安裝/發布契約測試及語法檢查通過；GoReleaser v2.17.1 `check`與snapshot release成功，兩架構archive均包含binary、根installer、offline installer、unit、移除腳本及README，裸binary雜湊與checksums一致。ShellCheck在本機不可用。
-- 本輪完整回歸：Go所有packages測試與vet通過；React 7 files/23 tests、ESLint、Vite build及web embed test通過；Linux amd64/arm64 binary與network/firewall integration test binaries交叉編譯通過；GitHub Actions與GoReleaser YAML可由解析器讀取。真實VPS/systemd/UFW、Linux root netlink/nftables與實際GitHub Release發布仍需遠端環境驗證。
+- 修復workflow_dispatch只建立tag而未發布Release的缺陷：Actions run `30861047672`證明原`Publish GitHub Release`因push-only條件被跳過；先以`deploy/release_test.sh`形成RED，再移除該條件並加入tag提交/Release存在性檢查及明確current tag。修復提交已正常推送，未刪除或重寫既有`v0.1.0`、`v0.1.1`。
+- GitHub Actions run `30861729476`成功建立並發布`v0.1.2`：`https://github.com/s12ryt/s12ryt-ipv6/releases/tag/v0.1.2`。前端、Go、shell、GoReleaser check、手動tag及Publish步驟全部成功，Release為latest、非draft、非prerelease。
+- `v0.1.2`實際發布五個資產：`checksums.txt`、Linux x86-64/arm64裸binary與兩個tar.gz。重新下載後`sha256sum -c checksums.txt`四項全部通過；兩個archive均含README、根/離線安裝器、systemd unit、移除腳本與binary；`file`確認裸檔分別為靜態連結、stripped的x86-64與AArch64 ELF。驗證暫存檔已清理。
+- 本輪完整回歸：Go所有packages測試與vet通過；React 7 files/23 tests、ESLint、Vite build及web embed test通過；Linux amd64/arm64 binary與network/firewall integration test binaries交叉編譯通過；GitHub Actions與GoReleaser YAML可由解析器讀取。真實VPS/systemd/UFW與Linux root netlink/nftables仍需在Linux VPS環境驗證。
