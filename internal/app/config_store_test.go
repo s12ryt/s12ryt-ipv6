@@ -97,6 +97,70 @@ func TestConfigStoreRejectsInvalidUpdatesWithoutChangingDiskOrMemory(t *testing.
 	}
 }
 
+func TestConfigStoreUpdatesManagementPortWithoutChangingOtherSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	want := config.Default()
+	want.AllowULA = true
+	want.NAT64Prefix = "64:ff9b::/96"
+	want.Resolvers = []config.Resolver{{
+		Name: "Custom", Address: "2001:4860:4860::6464", Port: 853, ServerName: "dns.google", Enabled: true,
+	}}
+	if err := config.Save(path, want); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewConfigStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.LoadOrCreate(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SaveManagementPort(45555); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Management.Port != 45555 {
+		t.Fatalf("management port = %d, want 45555", got.Management.Port)
+	}
+	if !got.AllowULA || got.NAT64Prefix != want.NAT64Prefix || len(got.Resolvers) != 1 || got.Resolvers[0] != want.Resolvers[0] {
+		t.Fatalf("unrelated settings changed: %#v", got)
+	}
+	if store.Snapshot().Management.Port != 45555 {
+		t.Fatal("live configuration was not updated")
+	}
+}
+
+func TestConfigStoreRejectsZeroManagementPortWithoutChangingState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	store, err := NewConfigStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.LoadOrCreate(); err != nil {
+		t.Fatal(err)
+	}
+	before := store.Snapshot()
+
+	if err := store.SaveManagementPort(0); err == nil {
+		t.Fatal("SaveManagementPort(0) error = nil")
+	}
+	if got := store.Snapshot().Management.Port; got != before.Management.Port {
+		t.Fatalf("live management port = %d, want %d", got, before.Management.Port)
+	}
+	reloaded, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Management.Port != before.Management.Port {
+		t.Fatalf("disk management port = %d, want %d", reloaded.Management.Port, before.Management.Port)
+	}
+}
+
 func TestNewConfigStoreRejectsEmptyPath(t *testing.T) {
 	if _, err := NewConfigStore(" "); err == nil {
 		t.Fatal("NewConfigStore(empty) error = nil")

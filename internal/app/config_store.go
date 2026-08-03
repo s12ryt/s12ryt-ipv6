@@ -72,6 +72,12 @@ func (s *ConfigStore) SaveResolvers(resolvers []config.Resolver) error {
 	})
 }
 
+func (s *ConfigStore) SaveManagementPort(port uint16) error {
+	return s.update(func(candidate *config.Config) {
+		candidate.Management.Port = port
+	})
+}
+
 func (s *ConfigStore) update(change func(*config.Config)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
