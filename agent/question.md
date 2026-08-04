@@ -212,3 +212,13 @@
 - 進階網路頁的 NAT64 設定改為「自動探索／自訂 `/96`」模式選單；自動模式只顯示目前探測前綴與來源，自訂模式才顯示輸入欄。基礎模式維持唯讀，不增加設定操作。
 - 進階網路頁提供 Cloudflare DNS64 與 Google DNS64 的可信 Resolver 預設選單；選取後自動帶入完整 IPv6、port 853 與 TLS server name，並避免加入重複端點。仍保留自訂 Resolver。基礎模式維持 Resolver 唯讀。
 - 驗收需以 Go 測試覆蓋介面／地址／路由偵測、去重、排序、過濾、衝突標記與登入保護 API；以 React 元件測試覆蓋載入／刷新／失敗保留、自訂備援、自動命名、NAT64 模式及 Resolver 預設；最後執行完整 Go／前端回歸、Linux amd64／arm64 交叉編譯與 Playwright 多尺寸驗收。
+
+## 20. Web 節點複製與 HTTP 剪貼簿備援
+
+- 節點操作列提供兩個獨立功能：「複製連線資訊」與「複製連線帳密」；帳密按鈕只對有認證的節點顯示。
+- 連線資訊採標準 URI、每個 URI 一行。SOCKS5 使用 `socks5://`，HTTP 使用 `http://`；mixed 節點同時輸出兩種協定。IPv6 host 必須加方括號，帳號與密碼必須做 URI 百分比編碼；無認證節點不得加入 userinfo。
+- IPv6-only 節點從具名固定入站地址取得 host；具名入站池每次複製從目前 active IPv6 隨機選取一個。沒有 active IPv6、資源不存在或資源類型不符時拒絕產生不可用 URI，並顯示明確去敏提示。
+- IPv4-only 節點使用目前管理面板網址的 hostname。雙棧節點同時輸出目前面板 hostname 與隨機一個 active IPv6／固定IPv6入口；重複 host 必須去重。
+- 自動複製先使用 `navigator.clipboard.writeText`；公網 HTTP 或權限限制導致不可用／失敗時，改用隱藏 textarea 與相容複製命令。兩種方式都失敗時，顯示具標題、唯讀可選取內容與關閉操作的手動複製對話框。
+- 複製成功後在該節點操作旁短暫顯示「已複製」；失敗不得靜默，也不得把代理帳密或完整URI寫入日誌、SSE、localStorage或錯誤訊息。
+- 驗收需以純函式測試覆蓋URI編碼、協定、IPv4／IPv6／雙棧、隨機池與錯誤路徑；以元件測試覆蓋兩個按鈕、Clipboard API成功、HTTP備援、手動對話框與操作回饋；最後執行完整前端test、lint、build及實際HTTP瀏覽器驗收。
