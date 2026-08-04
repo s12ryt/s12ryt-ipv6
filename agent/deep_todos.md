@@ -27,3 +27,11 @@
 - [x] 以 RED 測試重現手動 workflow 只建立 tag、未建立 Release 的缺陷。
 - [x] 修復手動 workflow，使新 tag 或安全續跑的既有 tag 在同一次 run 直接發布。
 - [x] 建立並驗證 `v0.1.2` Release、checksums、雙架構 archive 與 ELF binary。
+
+## 2026-08-04：Web 基礎／進階模式與詞彙文件
+
+- [x] 以 TDD 建立模式預設、保存、切換與表單狀態契約。
+- [x] 實作節點、IPv6資源、網路與日誌頁的基礎模式漸進揭露。
+- [x] 補齊完整README詞彙表與功能／頁面操作對照。
+- [x] 執行前端完整測試、lint、build及Playwright響應式驗收。
+- [x] 更新治理紀錄並完成品質審查。

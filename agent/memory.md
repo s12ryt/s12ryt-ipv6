@@ -67,3 +67,12 @@
 - GitHub Actions run `30861729476`成功建立並發布`v0.1.2`：`https://github.com/s12ryt/s12ryt-ipv6/releases/tag/v0.1.2`。前端、Go、shell、GoReleaser check、手動tag及Publish步驟全部成功，Release為latest、非draft、非prerelease。
 - `v0.1.2`實際發布五個資產：`checksums.txt`、Linux x86-64/arm64裸binary與兩個tar.gz。重新下載後`sha256sum -c checksums.txt`四項全部通過；兩個archive均含README、根/離線安裝器、systemd unit、移除腳本與binary；`file`確認裸檔分別為靜態連結、stripped的x86-64與AArch64 ELF。驗證暫存檔已清理。
 - 本輪完整回歸：Go所有packages測試與vet通過；React 7 files/23 tests、ESLint、Vite build及web embed test通過；Linux amd64/arm64 binary與network/firewall integration test binaries交叉編譯通過；GitHub Actions與GoReleaser YAML可由解析器讀取。真實VPS/systemd/UFW與Linux root netlink/nftables仍需在Linux VPS環境驗證。
+
+## 2026-08-04
+
+- 完成 Web 面板基礎／進階模式需求澄清並寫入 `agent/question.md` 第18節。模式預設為基礎，只保存於目前瀏覽器的 `s12ryt_panel_mode`，不寫後端；頂欄文字分段控制具 `aria-pressed`，切換不重建頁面或清除未送出表單。
+- 先以五個元件測試檔建立 RED：驗證模式預設與持久化、切換無 mutation、節點隱藏值保留、資源安全預設，以及網路／日誌破壞性或進階控制的漸進揭露。GREEN 後基礎模式保留五頁與日常操作，進階模式維持原完整介面。
+- 基礎節點表單只隱藏 limits、timeouts 與 ULA；既有值提交時原樣保存。基礎資源表單預設 `address`、自動固定地址及 10／100／15 池容量；網路保留診斷、連通性與密碼，resolver 唯讀；日誌保留全部查詢條件並隱藏清除／歸零。
+- 品質審查另以 RED 重現基礎日誌統計仍顯示空白「操作」欄，GREEN 後桌面表格改為實際六欄，進階模式仍保留第七欄操作。
+- README 新增管理面板模式、五頁操作對照、代理／資源、三種 Linux IPv6 配置、DNS64／NAT64／DoT／DAD／ULA／freebind／wildcard／draining 與健康狀態詞彙表及建議操作順序。
+- 最終驗證：前端 7 files／28 tests、ESLint、TypeScript 與 Vite production build通過；Go全套測試、vet及web embed test通過。Playwright以去敏API mock驗證基礎／進階模式、表單狀態、localStorage與零mutation，並在375／768／1024／1440寬度逐一檢查五頁，40組均無document/workspace溢出或頂欄重疊；1440亮色與375深色視覺檢查無截斷，乾淨後續console無新增錯誤。
