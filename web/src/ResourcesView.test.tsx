@@ -26,7 +26,7 @@ describe('ResourcesView', () => {
     }
     const mutate = vi.fn().mockResolvedValue(refreshed)
     const onChange = vi.fn()
-    render(<ResourcesView client={{ mutate } as Pick<ApiClient, 'mutate'>} resources={snapshot} onChange={onChange} />)
+    render(<ResourcesView mode="advanced" client={{ mutate } as Pick<ApiClient, 'mutate'>} resources={snapshot} onChange={onChange} />)
 
     expect(screen.getByText('2001:4860:1::/64')).toBeInTheDocument()
     expect(screen.getByText('fixed-main')).toBeInTheDocument()
@@ -46,7 +46,7 @@ describe('ResourcesView', () => {
       .mockResolvedValueOnce(fixed)
       .mockResolvedValueOnce(pool)
     const onChange = vi.fn()
-    render(<ResourcesView client={{ mutate } as Pick<ApiClient, 'mutate'>} resources={{ ...snapshot, fixed: [], addresses: [], pools: [] }} onChange={onChange} />)
+    render(<ResourcesView mode="advanced" client={{ mutate } as Pick<ApiClient, 'mutate'>} resources={{ ...snapshot, fixed: [], addresses: [], pools: [] }} onChange={onChange} />)
 
     await user.click(screen.getByRole('button', { name: '新增前綴範本' }))
     const templateForm = screen.getByRole('form', { name: '新增前綴範本' })
@@ -79,7 +79,7 @@ describe('ResourcesView', () => {
     const user = userEvent.setup()
     const mutate = vi.fn().mockResolvedValue(undefined)
     const onChange = vi.fn()
-    render(<ResourcesView client={{ mutate } as Pick<ApiClient, 'mutate'>} resources={snapshot} onChange={onChange} />)
+    render(<ResourcesView mode="advanced" client={{ mutate } as Pick<ApiClient, 'mutate'>} resources={snapshot} onChange={onChange} />)
 
     await user.click(screen.getByRole('button', { name: '強制終止 drain-1' }))
     expect(mutate).not.toHaveBeenCalled()
@@ -91,5 +91,46 @@ describe('ResourcesView', () => {
       ...snapshot,
       pools: [{ ...snapshot.pools[0], draining: [] }],
     })
+  })
+
+  it('uses safe resource defaults in basic mode while retaining refresh and force drain', async () => {
+    const user = userEvent.setup()
+    const template = { name: 'basic-wan', prefix: '2001:4860:2::/64', interface: 'eth1', mode: 'address' as const }
+    const fixed = { name: 'basic-fixed', template: 'wan', address: '2001:4860:1::30', ownership: 'address' as const }
+    const pool: AddressPool = { name: 'basic-pool', kind: 'shared-outbound', template: 'wan', capacity: 100, pinned: [], active: [], draining: [] }
+    const mutate = vi.fn().mockResolvedValueOnce(template).mockResolvedValueOnce(fixed).mockResolvedValueOnce(pool)
+    render(<ResourcesView mode="basic" client={{ mutate } as Pick<ApiClient, 'mutate'>} resources={snapshot} onChange={vi.fn()} />)
+
+    await user.click(screen.getByRole('button', { name: '新增前綴範本' }))
+    const templateForm = screen.getByRole('form', { name: '新增前綴範本' })
+    expect(within(templateForm).queryByLabelText('配置模式')).not.toBeInTheDocument()
+    await user.type(within(templateForm).getByLabelText('名稱'), 'basic-wan')
+    await user.type(within(templateForm).getByLabelText('IPv6 前綴'), '2001:4860:2::/64')
+    await user.type(within(templateForm).getByLabelText('Linux 介面'), 'eth1')
+    await user.click(within(templateForm).getByRole('button', { name: '建立範本' }))
+    await waitFor(() => expect(mutate).toHaveBeenNthCalledWith(1, '/api/resources/templates', 'POST', template))
+
+    await user.click(screen.getByRole('button', { name: '新增固定位址' }))
+    const fixedForm = screen.getByRole('form', { name: '新增固定位址' })
+    expect(within(fixedForm).queryByLabelText('IPv6 位址')).not.toBeInTheDocument()
+    await user.type(within(fixedForm).getByLabelText('名稱'), 'basic-fixed')
+    await user.selectOptions(within(fixedForm).getByLabelText('前綴範本'), 'wan')
+    await user.click(within(fixedForm).getByRole('button', { name: '建立固定位址' }))
+    await waitFor(() => expect(mutate).toHaveBeenNthCalledWith(2, '/api/resources/fixed', 'POST', { name: 'basic-fixed', template: 'wan' }))
+
+    await user.click(screen.getByRole('button', { name: '新增位址池' }))
+    const poolForm = screen.getByRole('form', { name: '新增位址池' })
+    expect(within(poolForm).queryByLabelText('容量')).not.toBeInTheDocument()
+    expect(within(poolForm).queryByRole('group', { name: '釘選固定位址' })).not.toBeInTheDocument()
+    await user.type(within(poolForm).getByLabelText('名稱'), 'basic-pool')
+    await user.selectOptions(within(poolForm).getByLabelText('用途'), 'shared-outbound')
+    await user.selectOptions(within(poolForm).getByLabelText('前綴範本'), 'wan')
+    await user.click(within(poolForm).getByRole('button', { name: '建立位址池' }))
+    await waitFor(() => expect(mutate).toHaveBeenNthCalledWith(3, '/api/resources/pools', 'POST', {
+      name: 'basic-pool', kind: 'shared-outbound', template: 'wan', capacity: 100, pinned: [],
+    }))
+
+    expect(screen.getByRole('button', { name: '刷新 shared-main' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '強制終止 drain-1' })).toBeInTheDocument()
   })
 })

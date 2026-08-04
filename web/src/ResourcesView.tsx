@@ -1,11 +1,13 @@
 import { FormEvent, useState } from 'react'
 import { Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import { AddressPool, APIError, ApiClient, PoolKind, ResourceMode, ResourceSnapshot } from './api'
+import type { PanelMode } from './panelMode'
 
 type ResourceClient = Pick<ApiClient, 'mutate'>
 type Editor = 'template' | 'fixed' | 'pool' | null
 
-export function ResourcesView({ client, resources, onChange }: {
+export function ResourcesView({ mode, client, resources, onChange }: {
+  mode: PanelMode
   client: ResourceClient
   resources: ResourceSnapshot
   onChange: (resources: ResourceSnapshot) => void
@@ -53,17 +55,17 @@ export function ResourcesView({ client, resources, onChange }: {
         <button className="secondary-button" type="button" onClick={() => setEditor('pool')}><Plus size={16} aria-hidden="true" />新增位址池</button>
       </div>
       {error && <div className="inline-error page-message" role="alert">{error}</div>}
-      {editor === 'template' && <TemplateForm busy={busy} onCancel={() => setEditor(null)} onCreate={(value) => run(async () => {
+      {editor === 'template' && <TemplateForm mode={mode} busy={busy} onCancel={() => setEditor(null)} onCreate={(value) => run(async () => {
         const created = await client.mutate<ResourceSnapshot['templates'][number]>('/api/resources/templates', 'POST', value)
         onChange({ ...resources, templates: [...resources.templates, created] })
         setEditor(null)
       }, '前綴範本建立失敗')} />}
-      {editor === 'fixed' && <FixedForm templates={resources.templates.map((item) => item.name)} busy={busy} onCancel={() => setEditor(null)} onCreate={(value) => run(async () => {
+      {editor === 'fixed' && <FixedForm mode={mode} templates={resources.templates.map((item) => item.name)} busy={busy} onCancel={() => setEditor(null)} onCreate={(value) => run(async () => {
         const created = await client.mutate<ResourceSnapshot['fixed'][number]>('/api/resources/fixed', 'POST', value)
         onChange({ ...resources, fixed: [...resources.fixed, created] })
         setEditor(null)
       }, '固定位址建立失敗')} />}
-      {editor === 'pool' && <PoolForm templates={resources.templates.map((item) => item.name)} fixed={resources.fixed.map((item) => item.name)} busy={busy} onCancel={() => setEditor(null)} onCreate={(value) => run(async () => {
+      {editor === 'pool' && <PoolForm mode={mode} templates={resources.templates.map((item) => item.name)} fixed={resources.fixed.map((item) => item.name)} busy={busy} onCancel={() => setEditor(null)} onCreate={(value) => run(async () => {
         const created = await client.mutate<AddressPool>('/api/resources/pools', 'POST', value)
         onChange({ ...resources, pools: [...resources.pools, created] })
         setEditor(null)
@@ -86,19 +88,19 @@ export function ResourcesView({ client, resources, onChange }: {
   )
 }
 
-function TemplateForm({ busy, onCancel, onCreate }: { busy: boolean; onCancel: () => void; onCreate: (value: { name: string; prefix: string; interface: string; mode: ResourceMode }) => void }) {
+function TemplateForm({ mode: panelMode, busy, onCancel, onCreate }: { mode: PanelMode; busy: boolean; onCancel: () => void; onCreate: (value: { name: string; prefix: string; interface: string; mode: ResourceMode }) => void }) {
   const [name, setName] = useState(''), [prefix, setPrefix] = useState(''), [device, setDevice] = useState(''), [mode, setMode] = useState<ResourceMode>('address')
-  return <EditorForm name="新增前綴範本" busy={busy} submit="建立範本" onCancel={onCancel} onSubmit={() => onCreate({ name: name.trim(), prefix: prefix.trim(), interface: device.trim(), mode })}><Field label="名稱"><input value={name} onChange={(event) => setName(event.target.value)} required /></Field><Field label="IPv6 前綴"><input value={prefix} onChange={(event) => setPrefix(event.target.value)} required /></Field><Field label="Linux 介面"><input value={device} onChange={(event) => setDevice(event.target.value)} required /></Field><Field label="配置模式"><select value={mode} onChange={(event) => setMode(event.target.value as ResourceMode)}><option value="address">逐址配置</option><option value="local-route-freebind">Local route + freebind</option><option value="external">外部預配置</option></select></Field></EditorForm>
+  return <EditorForm name="新增前綴範本" busy={busy} submit="建立範本" onCancel={onCancel} onSubmit={() => onCreate({ name: name.trim(), prefix: prefix.trim(), interface: device.trim(), mode })}><Field label="名稱"><input value={name} onChange={(event) => setName(event.target.value)} required /></Field><Field label="IPv6 前綴"><input value={prefix} onChange={(event) => setPrefix(event.target.value)} required /></Field><Field label="Linux 介面"><input value={device} onChange={(event) => setDevice(event.target.value)} required /></Field>{panelMode === 'advanced' && <Field label="配置模式"><select value={mode} onChange={(event) => setMode(event.target.value as ResourceMode)}><option value="address">逐址配置</option><option value="local-route-freebind">Local route + freebind</option><option value="external">外部預配置</option></select></Field>}</EditorForm>
 }
 
-function FixedForm({ templates, busy, onCancel, onCreate }: { templates: string[]; busy: boolean; onCancel: () => void; onCreate: (value: { name: string; template: string; address?: string }) => void }) {
+function FixedForm({ mode, templates, busy, onCancel, onCreate }: { mode: PanelMode; templates: string[]; busy: boolean; onCancel: () => void; onCreate: (value: { name: string; template: string; address?: string }) => void }) {
   const [name, setName] = useState(''), [template, setTemplate] = useState(templates[0] ?? ''), [address, setAddress] = useState('')
-  return <EditorForm name="新增固定位址" busy={busy} submit="建立固定位址" onCancel={onCancel} onSubmit={() => onCreate({ name: name.trim(), template, ...(address.trim() ? { address: address.trim() } : {}) })}><Field label="名稱"><input value={name} onChange={(event) => setName(event.target.value)} required /></Field><Field label="前綴範本"><select value={template} onChange={(event) => setTemplate(event.target.value)} required><option value="" disabled>選擇範本</option>{templates.map((item) => <option key={item}>{item}</option>)}</select></Field><Field label="IPv6 位址"><input value={address} onChange={(event) => setAddress(event.target.value)} placeholder="空白自動生成" /></Field></EditorForm>
+  return <EditorForm name="新增固定位址" busy={busy} submit="建立固定位址" onCancel={onCancel} onSubmit={() => onCreate({ name: name.trim(), template, ...(address.trim() ? { address: address.trim() } : {}) })}><Field label="名稱"><input value={name} onChange={(event) => setName(event.target.value)} required /></Field><Field label="前綴範本"><select value={template} onChange={(event) => setTemplate(event.target.value)} required><option value="" disabled>選擇範本</option>{templates.map((item) => <option key={item}>{item}</option>)}</select></Field>{mode === 'advanced' && <Field label="IPv6 位址"><input value={address} onChange={(event) => setAddress(event.target.value)} placeholder="空白自動生成" /></Field>}</EditorForm>
 }
 
-function PoolForm({ templates, fixed, busy, onCancel, onCreate }: { templates: string[]; fixed: string[]; busy: boolean; onCancel: () => void; onCreate: (value: { name: string; kind: PoolKind; template: string; capacity: number; pinned: string[] }) => void }) {
+function PoolForm({ mode, templates, fixed, busy, onCancel, onCreate }: { mode: PanelMode; templates: string[]; fixed: string[]; busy: boolean; onCancel: () => void; onCreate: (value: { name: string; kind: PoolKind; template: string; capacity: number; pinned: string[] }) => void }) {
   const [name, setName] = useState(''), [kind, setKind] = useState<PoolKind>('inbound'), [template, setTemplate] = useState(templates[0] ?? ''), [capacity, setCapacity] = useState('10'), [pinned, setPinned] = useState<string[]>([])
-  return <EditorForm name="新增位址池" busy={busy} submit="建立位址池" onCancel={onCancel} onSubmit={() => onCreate({ name: name.trim(), kind, template, capacity: Number(capacity), pinned })}><Field label="名稱"><input value={name} onChange={(event) => setName(event.target.value)} required /></Field><Field label="用途"><select value={kind} onChange={(event) => { const value = event.target.value as PoolKind; setKind(value); if (value === 'inbound') setCapacity('10'); else if (value === 'shared-outbound') setCapacity('100'); else setCapacity('15') }}><option value="inbound">動態入站</option><option value="shared-outbound">共享出站</option><option value="dedicated-outbound">節點專用出站</option></select></Field><Field label="前綴範本"><select value={template} onChange={(event) => setTemplate(event.target.value)} required><option value="" disabled>選擇範本</option>{templates.map((item) => <option key={item}>{item}</option>)}</select></Field><Field label="容量"><input type="number" min="1" max="4096" value={capacity} onChange={(event) => setCapacity(event.target.value)} required /></Field>{fixed.length > 0 && <fieldset className="pin-field"><legend>釘選固定位址</legend>{fixed.map((item) => <label key={item}><input type="checkbox" checked={pinned.includes(item)} onChange={(event) => setPinned(event.target.checked ? [...pinned, item] : pinned.filter((value) => value !== item))} />{item}</label>)}</fieldset>}</EditorForm>
+  return <EditorForm name="新增位址池" busy={busy} submit="建立位址池" onCancel={onCancel} onSubmit={() => onCreate({ name: name.trim(), kind, template, capacity: Number(capacity), pinned })}><Field label="名稱"><input value={name} onChange={(event) => setName(event.target.value)} required /></Field><Field label="用途"><select value={kind} onChange={(event) => { const value = event.target.value as PoolKind; setKind(value); if (value === 'inbound') setCapacity('10'); else if (value === 'shared-outbound') setCapacity('100'); else setCapacity('15') }}><option value="inbound">動態入站</option><option value="shared-outbound">共享出站</option><option value="dedicated-outbound">節點專用出站</option></select></Field><Field label="前綴範本"><select value={template} onChange={(event) => setTemplate(event.target.value)} required><option value="" disabled>選擇範本</option>{templates.map((item) => <option key={item}>{item}</option>)}</select></Field>{mode === 'advanced' && <Field label="容量"><input type="number" min="1" max="4096" value={capacity} onChange={(event) => setCapacity(event.target.value)} required /></Field>}{mode === 'advanced' && fixed.length > 0 && <fieldset className="pin-field"><legend>釘選固定位址</legend>{fixed.map((item) => <label key={item}><input type="checkbox" checked={pinned.includes(item)} onChange={(event) => setPinned(event.target.checked ? [...pinned, item] : pinned.filter((value) => value !== item))} />{item}</label>)}</fieldset>}</EditorForm>
 }
 
 function EditorForm({ name, busy, submit, onCancel, onSubmit, children }: { name: string; busy: boolean; submit: string; onCancel: () => void; onSubmit: () => void; children: React.ReactNode }) {
