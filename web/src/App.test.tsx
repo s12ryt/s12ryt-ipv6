@@ -169,6 +169,7 @@ describe('App', () => {
 
   it('loads an existing session and persists an explicit theme choice', async () => {
     localStorage.setItem('s12ryt_theme', 'dark')
+    localStorage.setItem('s12ryt_panel_mode', 'advanced')
     const user = userEvent.setup()
     installFetch(true)
 
@@ -177,6 +178,7 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: '總覽' })).toBeInTheDocument()
     expect(document.documentElement).toHaveAttribute('data-theme', 'dark')
     expect(screen.getByRole('button', { name: '使用深色主題' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: '進階模式' })).toHaveAttribute('aria-pressed', 'true')
 
     await user.click(screen.getByRole('button', { name: '跟隨系統主題' }))
     await waitFor(() => expect(document.documentElement).not.toHaveAttribute('data-theme'))
@@ -185,6 +187,30 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: '使用亮色主題' }))
     expect(document.documentElement).toHaveAttribute('data-theme', 'light')
     expect(localStorage.getItem('s12ryt_theme')).toBe('light')
+  })
+
+  it('defaults to basic mode, persists mode changes, and keeps an open form intact', async () => {
+    const user = userEvent.setup()
+    const fetchMock = installFetch(true)
+    render(<App />)
+
+    await screen.findByRole('heading', { name: '總覽' })
+    expect(screen.getByRole('button', { name: '基礎模式' })).toHaveAttribute('aria-pressed', 'true')
+    expect(localStorage.getItem('s12ryt_panel_mode')).toBe('basic')
+
+    await user.click(screen.getByRole('button', { name: '節點' }))
+    await user.click(screen.getByRole('button', { name: '新增節點' }))
+    await user.type(screen.getByLabelText('顯示名稱'), '未完成的節點')
+    expect(screen.queryByLabelText('TCP 上限')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '進階模式' }))
+    expect(screen.getByLabelText('顯示名稱')).toHaveValue('未完成的節點')
+    expect(screen.getByLabelText('TCP 上限')).toBeInTheDocument()
+    expect(localStorage.getItem('s12ryt_panel_mode')).toBe('advanced')
+
+    await user.click(screen.getByRole('button', { name: '基礎模式' }))
+    expect(screen.getByLabelText('顯示名稱')).toHaveValue('未完成的節點')
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method && init.method !== 'GET')).toHaveLength(0)
   })
 
   it('refreshes only affected data from SSE events and closes the stream on logout', async () => {

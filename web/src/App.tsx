@@ -18,6 +18,7 @@ import { NodesView } from './NodesView'
 import { NetworkView } from './NetworkView'
 import { LogsView } from './LogsView'
 import { ResourcesView } from './ResourcesView'
+import { PanelMode, persistPanelMode, storedPanelMode } from './panelMode'
 
 type AppPhase = 'checking' | 'login' | 'loading' | 'ready'
 type Theme = 'system' | 'light' | 'dark'
@@ -48,10 +49,12 @@ export function App() {
   const [data, setData] = useState<InitialData | null>(null)
   const [view, setView] = useState<View>('overview')
   const [theme, setTheme] = useState<Theme>(storedTheme)
+  const [panelMode, setPanelMode] = useState<PanelMode>(storedPanelMode)
   const [error, setError] = useState('')
   const [logRevision, setLogRevision] = useState(0)
 
   useEffect(() => applyTheme(theme), [theme])
+  useEffect(() => persistPanelMode(panelMode), [panelMode])
 
   useEffect(() => {
     let active = true
@@ -166,6 +169,7 @@ export function App() {
           <div><strong>s12ryt IPv6</strong><span>出口節點控制台</span></div>
         </div>
         <div className="topbar-actions">
+          <ModeControl mode={panelMode} onChange={setPanelMode} />
           <ThemeControl theme={theme} onChange={setTheme} />
           <button className="icon-text-button" type="button" onClick={() => void logout()}>
             <LogOut size={17} aria-hidden="true" />登出
@@ -193,10 +197,10 @@ export function App() {
       <main className="workspace">
         {error && <div className="inline-error" role="alert">{error}</div>}
         {view === 'overview' && <OverviewView data={data} />}
-          {view === 'nodes' && <NodesView client={client} nodes={data.nodes} resources={data.resources} onChange={(nodes) => setData({ ...data, nodes })} />}
-        {view === 'resources' && <ResourcesView client={client} resources={data.resources} onChange={(resources) => setData({ ...data, resources })} />}
-        {view === 'network' && <NetworkView client={client} overview={data.overview} onChange={(overview) => setData({ ...data, overview })} onPasswordChanged={() => { setData(null); setPhase('login') }} />}
-        {view === 'logs' && <LogsView key={logRevision} client={client} statistics={data.statistics} onStatisticsChange={(statistics) => setData({ ...data, statistics })} />}
+        {view === 'nodes' && <NodesView mode={panelMode} client={client} nodes={data.nodes} resources={data.resources} onChange={(nodes) => setData({ ...data, nodes })} />}
+        {view === 'resources' && <ResourcesView mode={panelMode} client={client} resources={data.resources} onChange={(resources) => setData({ ...data, resources })} />}
+        {view === 'network' && <NetworkView mode={panelMode} client={client} overview={data.overview} onChange={(overview) => setData({ ...data, overview })} onPasswordChanged={() => { setData(null); setPhase('login') }} />}
+        {view === 'logs' && <LogsView key={logRevision} mode={panelMode} client={client} statistics={data.statistics} onStatisticsChange={(statistics) => setData({ ...data, statistics })} />}
       </main>
     </div>
   )
@@ -278,6 +282,27 @@ function ThemeControl({ theme, onChange }: { theme: Theme; onChange: (theme: The
           </button>
         )
       })}
+    </div>
+  )
+}
+
+function ModeControl({ mode, onChange }: { mode: PanelMode; onChange: (mode: PanelMode) => void }) {
+  const choices: Array<{ id: PanelMode; label: string }> = [
+    { id: 'basic', label: '基礎模式' },
+    { id: 'advanced', label: '進階模式' },
+  ]
+  return (
+    <div className="mode-control" role="group" aria-label="介面模式">
+      {choices.map((choice) => (
+        <button
+          key={choice.id}
+          type="button"
+          aria-pressed={mode === choice.id}
+          onClick={() => onChange(choice.id)}
+        >
+          {choice.label}
+        </button>
+      ))}
     </div>
   )
 }

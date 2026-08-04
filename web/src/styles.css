@@ -99,6 +99,9 @@ form > button:hover, .icon-text-button:hover { background: var(--primary-hover);
 .theme-control { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-muted); padding: 2px; }
 .theme-control button { display: grid; width: 30px; height: 28px; border: 0; border-radius: 4px; place-items: center; background: transparent; color: var(--muted); }
 .theme-control button[aria-pressed="true"] { background: var(--surface); color: var(--primary); box-shadow: 0 1px 2px rgb(0 0 0 / 12%); }
+.mode-control { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-muted); padding: 2px; }
+.mode-control button { min-width: 52px; height: 28px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); padding: 0 9px; font-size: 0.75rem; font-weight: 700; white-space: nowrap; }
+.mode-control button[aria-pressed="true"] { background: var(--surface); color: var(--primary); box-shadow: 0 1px 2px rgb(0 0 0 / 12%); }
 
 .app-shell { display: grid; min-height: 100vh; grid-template: auto 60px 1fr / 220px minmax(0, 1fr); }
 .app-shell > .risk-alert { grid-column: 1 / -1; }
@@ -201,6 +204,9 @@ form > button:hover, .icon-text-button:hover { background: var(--primary-hover);
 .stats-head { color: var(--muted); font-size: 0.7rem; font-weight: 750; text-transform: uppercase; }
 .stats-row { font-size: 0.8rem; }
 .stats-row > div { display: flex; justify-content: flex-end; }
+@media (min-width: 1025px) {
+  .stats-table.basic .stats-head, .stats-table.basic .stats-row { grid-template-columns: minmax(120px, 1.3fr) repeat(5, minmax(74px, 0.7fr)); }
+}
 .log-filters { display: grid; grid-template-columns: minmax(110px, 0.7fr) repeat(2, minmax(130px, 1fr)) minmax(100px, 0.7fr) 84px auto; align-items: end; gap: 10px; border-bottom: 1px solid var(--border); background: var(--surface-muted); padding: 12px; }
 .filter-button { min-height: 42px; }
 .event-row { display: grid; grid-template-columns: 150px 48px minmax(130px, 0.7fr) minmax(240px, 1.3fr) auto; align-items: center; gap: 12px; border-bottom: 1px solid var(--border); padding: 11px 3px; font-size: 0.78rem; }
@@ -246,6 +252,7 @@ form > button:hover, .icon-text-button:hover { background: var(--primary-hover);
   .login-theme { right: 14px; top: 14px; }
   .login-panel { padding: 22px 18px; }
   .topbar-actions { gap: 6px; }
+  .mode-control button { min-width: 46px; padding: 0 6px; font-size: 0.7rem; }
   .icon-text-button { width: 34px; padding: 0; justify-content: center; font-size: 0; }
   .metrics { grid-template-columns: minmax(0, 1fr); }
   .metric + .metric { border-left: 0; border-top: 1px solid var(--border); }
