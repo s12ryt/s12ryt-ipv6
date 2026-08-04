@@ -7,6 +7,19 @@ export type BindProtocol = 'tcp' | 'udp'
 export type BindFamily = 'ipv4' | 'ipv6'
 export type ResourceMode = 'address' | 'local-route-freebind' | 'external'
 export type PoolKind = 'inbound' | 'shared-outbound' | 'dedicated-outbound'
+export type PrefixSource = 'address' | 'route'
+export type PrefixConflictReason = 'exact' | 'overlap'
+
+export interface NetworkCandidateSnapshot {
+  interfaces: Array<{ name: string; index: number }>
+  prefixes: Array<{
+    interface: string
+    prefix: string
+    sources: PrefixSource[]
+    available: boolean
+    conflicts: Array<{ template: string; reason: PrefixConflictReason }>
+  }>
+}
 
 export interface ResolverConfig {
   name: string
