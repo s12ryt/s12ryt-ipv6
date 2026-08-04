@@ -46,7 +46,7 @@ describe('NodesView', () => {
     const mutate = vi.fn().mockResolvedValue(stopped)
     const onChange = vi.fn()
 
-    render(<NodesView client={{ mutate } as Pick<ApiClient, 'mutate'>} nodes={[runningNode]} resources={resources} onChange={onChange} />)
+    render(<NodesView mode="advanced" client={{ mutate } as Pick<ApiClient, 'mutate'>} nodes={[runningNode]} resources={resources} onChange={onChange} />)
 
     expect(screen.queryByText('proxy-password-value')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '顯示 edge-1 帳密' }))
@@ -70,7 +70,7 @@ describe('NodesView', () => {
     }
     const mutate = vi.fn().mockResolvedValue(created)
     const onChange = vi.fn()
-    render(<NodesView client={{ mutate } as Pick<ApiClient, 'mutate'>} nodes={[]} resources={resources} onChange={onChange} />)
+    render(<NodesView mode="advanced" client={{ mutate } as Pick<ApiClient, 'mutate'>} nodes={[]} resources={resources} onChange={onChange} />)
 
     await user.click(screen.getByRole('button', { name: '新增節點' }))
     await user.type(screen.getByLabelText('節點 ID'), 'edge-2')
@@ -101,7 +101,7 @@ describe('NodesView', () => {
     const user = userEvent.setup()
     const mutate = vi.fn().mockResolvedValue(undefined)
     const onChange = vi.fn()
-    render(<NodesView client={{ mutate } as Pick<ApiClient, 'mutate'>} nodes={[runningNode]} resources={resources} onChange={onChange} />)
+    render(<NodesView mode="advanced" client={{ mutate } as Pick<ApiClient, 'mutate'>} nodes={[runningNode]} resources={resources} onChange={onChange} />)
 
     await user.click(screen.getByRole('button', { name: '新增節點' }))
     await user.selectOptions(screen.getByLabelText('代理認證'), 'none')
@@ -114,5 +114,46 @@ describe('NodesView', () => {
     await user.click(screen.getByRole('button', { name: '確認刪除 edge-1' }))
     await waitFor(() => expect(mutate).toHaveBeenCalledWith('/api/nodes/edge-1', 'DELETE', {}))
     expect(onChange).toHaveBeenCalledWith([])
+  })
+
+  it('keeps common controls visible in basic mode and preserves hidden advanced values', async () => {
+    const user = userEvent.setup()
+    const customized: NodeRecord = {
+      ...runningNode,
+      max_tcp: 777,
+      max_udp: 333,
+      dial_timeout: '17s',
+      handshake_timeout: '41s',
+      tunnel_idle_timeout: '2m',
+      udp_idle_timeout: '9m',
+      ula_override: 'allow',
+    }
+    const updated = { ...customized, name: '更新名稱' }
+    const mutate = vi.fn().mockResolvedValue(updated)
+
+    render(<NodesView mode="basic" client={{ mutate } as Pick<ApiClient, 'mutate'>} nodes={[customized]} resources={resources} onChange={vi.fn()} />)
+
+    await user.click(screen.getByRole('button', { name: '編輯 edge-1' }))
+    expect(screen.getByLabelText('代理埠')).toBeInTheDocument()
+    expect(screen.getByLabelText('代理帳號')).toBeInTheDocument()
+    expect(screen.queryByLabelText('TCP 上限')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('UDP association 上限')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Dial timeout')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('ULA 政策')).not.toBeInTheDocument()
+
+    await user.clear(screen.getByLabelText('顯示名稱'))
+    await user.type(screen.getByLabelText('顯示名稱'), '更新名稱')
+    await user.click(screen.getByRole('button', { name: '儲存並切換' }))
+
+    await waitFor(() => expect(mutate).toHaveBeenCalledWith('/api/nodes/edge-1', 'PUT', expect.objectContaining({
+      name: '更新名稱',
+      max_tcp: 777,
+      max_udp: 333,
+      dial_timeout: '17s',
+      handshake_timeout: '41s',
+      tunnel_idle_timeout: '2m',
+      udp_idle_timeout: '9m',
+      ula_override: 'allow',
+    })))
   })
 })

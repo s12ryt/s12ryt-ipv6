@@ -1,10 +1,12 @@
 import { FormEvent, ReactNode, useState } from 'react'
 import { Copy, Eye, EyeOff, Pencil, Play, Plus, RotateCcw, Square, Trash2, X } from 'lucide-react'
 import { APIError, ApiClient, InboundMode, NodeMutation, NodeProtocol, NodeRecord, ResourceSnapshot, ULAOverride } from './api'
+import type { PanelMode } from './panelMode'
 
 type NodeClient = Pick<ApiClient, 'mutate'>
 
 interface NodesViewProps {
+  mode: PanelMode
   client: NodeClient
   nodes: NodeRecord[]
   resources: ResourceSnapshot
@@ -39,7 +41,7 @@ const emptyForm: NodeFormState = {
   tunnelIdleTimeout: '0s', udpIdleTimeout: '5m', ulaOverride: 'inherit', confirmUnauthenticated: false,
 }
 
-export function NodesView({ client, nodes, resources, onChange }: NodesViewProps) {
+export function NodesView({ mode, client, nodes, resources, onChange }: NodesViewProps) {
   const [form, setForm] = useState<NodeFormState | null>(null)
   const [editingID, setEditingID] = useState('')
   const [visibleSecrets, setVisibleSecrets] = useState<Set<string>>(new Set())
@@ -139,7 +141,7 @@ export function NodesView({ client, nodes, resources, onChange }: NodesViewProps
         </button>
       </div>
       {error && <div className="inline-error page-message" role="alert">{error}</div>}
-      {form && <NodeEditor form={form} editing={Boolean(editingID)} busy={busy === 'form'} resources={resources} onChange={setForm} onSubmit={submit} onCancel={() => { setForm(null); setEditingID('') }} />}
+      {form && <NodeEditor mode={mode} form={form} editing={Boolean(editingID)} busy={busy === 'form'} resources={resources} onChange={setForm} onSubmit={submit} onCancel={() => { setForm(null); setEditingID('') }} />}
       <div className="resource-table" role="table" aria-label="代理節點">
         <div className="resource-table-head" role="row"><span>節點</span><span>入站</span><span>出站</span><span>狀態</span><span>操作</span></div>
         {nodes.length === 0 ? <p className="empty-state">尚未建立節點</p> : nodes.map((node) => {
@@ -175,7 +177,8 @@ export function NodesView({ client, nodes, resources, onChange }: NodesViewProps
   )
 }
 
-function NodeEditor({ form, editing, busy, resources, onChange, onSubmit, onCancel }: {
+function NodeEditor({ mode, form, editing, busy, resources, onChange, onSubmit, onCancel }: {
+  mode: PanelMode
   form: NodeFormState
   editing: boolean
   busy: boolean
@@ -203,13 +206,15 @@ function NodeEditor({ form, editing, busy, resources, onChange, onSubmit, onCanc
         <Field label="代理埠"><input type="number" min="0" max="65535" value={form.port} onChange={(event) => set('port', event.target.value)} required /></Field>
         <Field label="入站位址族"><select value={form.inboundMode} onChange={(event) => set('inboundMode', event.target.value as InboundMode)}><option value="ipv6">僅 IPv6</option><option value="ipv4">僅 IPv4</option><option value="dual">雙棧</option></select></Field>
         {form.inboundMode !== 'ipv4' && <Field label="IPv6 入站資源"><select value={form.inboundResource} onChange={(event) => set('inboundResource', event.target.value)} required><option value="">請選擇</option>{inboundResources.map((name) => <option key={name} value={name}>{name}</option>)}</select></Field>}
-        <Field label="TCP 上限"><input type="number" min="1" value={form.maxTCP} onChange={(event) => set('maxTCP', event.target.value)} required /></Field>
-        <Field label="UDP association 上限"><input type="number" min="1" value={form.maxUDP} onChange={(event) => set('maxUDP', event.target.value)} required /></Field>
-        <Field label="Dial timeout"><input value={form.dialTimeout} onChange={(event) => set('dialTimeout', event.target.value)} required /></Field>
-        <Field label="握手 timeout"><input value={form.handshakeTimeout} onChange={(event) => set('handshakeTimeout', event.target.value)} required /></Field>
-        <Field label="Tunnel idle timeout"><input value={form.tunnelIdleTimeout} onChange={(event) => set('tunnelIdleTimeout', event.target.value)} required /></Field>
-        <Field label="UDP idle timeout"><input value={form.udpIdleTimeout} onChange={(event) => set('udpIdleTimeout', event.target.value)} required /></Field>
-        <Field label="ULA 政策"><select value={form.ulaOverride} onChange={(event) => set('ulaOverride', event.target.value as ULAOverride)}><option value="inherit">沿用全域</option><option value="allow">允許</option><option value="deny">拒絕</option></select></Field>
+        {mode === 'advanced' && <>
+          <Field label="TCP 上限"><input type="number" min="1" value={form.maxTCP} onChange={(event) => set('maxTCP', event.target.value)} required /></Field>
+          <Field label="UDP association 上限"><input type="number" min="1" value={form.maxUDP} onChange={(event) => set('maxUDP', event.target.value)} required /></Field>
+          <Field label="Dial timeout"><input value={form.dialTimeout} onChange={(event) => set('dialTimeout', event.target.value)} required /></Field>
+          <Field label="握手 timeout"><input value={form.handshakeTimeout} onChange={(event) => set('handshakeTimeout', event.target.value)} required /></Field>
+          <Field label="Tunnel idle timeout"><input value={form.tunnelIdleTimeout} onChange={(event) => set('tunnelIdleTimeout', event.target.value)} required /></Field>
+          <Field label="UDP idle timeout"><input value={form.udpIdleTimeout} onChange={(event) => set('udpIdleTimeout', event.target.value)} required /></Field>
+          <Field label="ULA 政策"><select value={form.ulaOverride} onChange={(event) => set('ulaOverride', event.target.value as ULAOverride)}><option value="inherit">沿用全域</option><option value="allow">允許</option><option value="deny">拒絕</option></select></Field>
+        </>}
       </div>
       <div className="form-actions"><button className="primary-button" type="submit" disabled={busy || (form.authentication === 'none' && !form.confirmUnauthenticated)}>{editing ? '儲存並切換' : '建立並啟動'}</button><button className="secondary-button" type="button" onClick={onCancel}>取消</button></div>
     </form>
