@@ -82,3 +82,6 @@
 - 前端新增節點與資源自動命名、IPv6資源頁介面／CIDR候選與自訂備援。候選載入或刷新失敗時保留舊結果；衝突候選仍顯示原因但不可選。品質審查以RED重現表單先開啟、候選稍後抵達的時序問題，GREEN後僅未被管理員修改的表單會自動採用候選；明確切回自訂後不再被覆寫。
 - 進階網路頁將NAT64改為自動探索／自訂 `/96` 模式，並提供Cloudflare與Google四個DNS64端點預設；相同address+port的端點不可重複加入，自訂Resolver仍保留。基礎模式維持唯讀。
 - 本輪最終驗證：Go全套測試與vet、Linux amd64/arm64 build、network/firewall integration test binary交叉編譯、web embed test通過；前端8 files／34 tests、ESLint、TypeScript與Vite production build通過。Playwright以去敏API mock驗證候選衝突、介面切換、自動命名、NAT64模式與Resolver預設，並完成375／768／1024／1440、基礎／進階與五頁共40組無水平溢出檢查；console無新增錯誤。
+- 修復公網HTTP管理面節點複製失敗：原元件直接呼叫可能不存在的 `navigator.clipboard.writeText`，在不安全context會同步拋出TypeError。先以純函式與元件測試形成RED，再新增Clipboard API→隱藏textarea/`execCommand`→手動可選取對話框的三級降級；成功後於節點操作旁顯示2秒「已複製」。
+- 節點新增獨立「複製連線資訊」與「複製連線帳密」。連線資訊依SOCKS5／HTTP／mixed輸出逐行標準URI，百分比編碼userinfo、IPv6加方括號；IPv4使用面板hostname，固定IPv6使用具名地址，入站池每次隨機一個active地址，雙棧輸出並去重。空池、錯誤類型、缺失／歧義資源與不完整帳密均在複製前拒絕。
+- 複製修復驗證：前端10 files／43 tests、ESLint、TypeScript與Vite production build通過，LSP無診斷。Playwright在實際HTTP頁停用Clipboard API，驗證相容備援成功、2秒回饋消失、全自動失敗時對話框自動全選正確mixed IPv6 URI；375／768／1440操作列與頁面無水平溢出，console為0 errors。

@@ -43,3 +43,11 @@
 - [x] 實作資源／節點自動命名、介面與 CIDR 候選選單及自訂備援。
 - [x] 實作 NAT64 自動／自訂模式與 Cloudflare／Google Resolver 預設選單。
 - [x] 完成完整回歸、Linux 雙架構 build、Playwright 驗收與治理紀錄。
+
+## 2026-08-04：Web 節點複製與 HTTP 剪貼簿備援
+
+- [x] 以 TDD 定義標準連線 URI、入站資源解析與隨機池選擇。
+- [x] 以 TDD 實作 Clipboard API、HTTP相容備援及手動複製對話框。
+- [x] 在節點操作列提供獨立的連線資訊與帳密複製功能及短暫回饋。
+- [x] 執行前端完整回歸、lint、build與公網HTTP情境Playwright驗收。
+- [x] 完成品質審查並更新治理紀錄。
