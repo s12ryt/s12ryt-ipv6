@@ -155,6 +155,14 @@ form > button:hover, .icon-text-button:hover { background: var(--primary-hover);
 .risk-field { grid-column: span 2; border-left: 3px solid var(--warning-border); background: var(--warning-bg); color: var(--warning-text); padding: 10px 12px; }
 .risk-field, .risk-field label { display: flex; align-items: center; gap: 12px; font-size: 0.8rem; }
 .form-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.folder-rename { flex-wrap: wrap; border-left: 3px solid var(--primary); background: var(--surface-muted); margin-bottom: 18px; padding: 10px 12px; }
+.folder-rename .field { min-width: min(260px, 100%); flex: 1; }
+.node-folder-list { display: grid; gap: 22px; }
+.node-folder { min-width: 0; }
+.node-folder-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 2px; }
+.node-folder-title { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.node-folder-title h2 { overflow-wrap: anywhere; }
+.count-badge { display: inline-flex; min-width: 24px; height: 24px; align-items: center; justify-content: center; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); padding: 0 7px; font-size: 0.72rem; font-weight: 700; }
 .resource-table { border-top: 1px solid var(--border); }
 .resource-table-head, .resource-table-row { display: grid; grid-template-columns: minmax(160px, 1.2fr) minmax(130px, 1fr) minmax(130px, 1fr) 90px minmax(190px, auto); gap: 14px; align-items: center; border-bottom: 1px solid var(--border); padding: 11px 4px; }
 .resource-table-head { color: var(--muted); font-size: 0.72rem; font-weight: 750; text-transform: uppercase; }
@@ -165,9 +173,17 @@ form > button:hover, .icon-text-button:hover { background: var(--primary-hover);
 .icon-button:hover { border-color: var(--border); background: var(--surface-muted); color: var(--text); }
 .copy-feedback { align-self: center; color: var(--success); padding: 0 5px; font-size: 0.74rem; font-weight: 700; white-space: nowrap; }
 .secret-row, .confirm-row { grid-column: 1 / -1; }
+.node-folder-move { grid-column: 1 / -1; padding-top: 2px; }
+.node-folder-move label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 0.74rem; }
+.node-folder-move select { width: min(240px, 100%); height: 34px; }
 .secret-row { display: flex; flex-wrap: wrap; gap: 10px 24px; border-left: 3px solid var(--primary); background: var(--surface-muted); padding: 9px 12px; font-size: 0.8rem; overflow-wrap: anywhere; }
 .confirm-row { display: flex; align-items: center; justify-content: flex-end; gap: 8px; color: var(--danger); font-size: 0.8rem; }
 .confirm-row span { margin-right: auto; }
+.batch-preview { max-height: min(480px, 60vh); overflow-y: auto; border-block: 1px solid var(--border); }
+.batch-preview-head, .batch-preview-row { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(180px, 1.2fr) 110px; gap: 10px; align-items: center; padding: 9px 3px; }
+.batch-preview-head { position: sticky; z-index: 1; top: 0; background: var(--surface-muted); color: var(--muted); font-size: 0.72rem; font-weight: 750; }
+.batch-preview-row { border-top: 1px solid var(--border); }
+.batch-preview-row label, .batch-preview-row input { min-width: 0; width: 100%; }
 .toolbar-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
 .resource-section { margin-top: 26px; }
 .line-item, .pool-summary, .drain-row { display: grid; align-items: center; gap: 14px; border-bottom: 1px solid var(--border); padding: 11px 3px; }
@@ -267,6 +283,13 @@ form > button:hover, .icon-text-button:hover { background: var(--primary-hover);
   .risk-field { grid-column: 1; align-items: flex-start; flex-direction: column; }
   .resource-table-row { grid-template-columns: minmax(0, 1fr); }
   .row-actions, .secret-row, .confirm-row { grid-column: 1; }
+  .node-folder-heading { align-items: stretch; flex-direction: column; }
+  .node-folder-heading .row-actions { width: 100%; }
+  .node-folder-move { grid-column: 1; }
+  .node-folder-move label { align-items: stretch; flex-direction: column; }
+  .node-folder-move select { width: 100%; }
+  .batch-preview-head { display: none; }
+  .batch-preview-row { grid-template-columns: minmax(0, 1fr); }
   .confirm-row { align-items: stretch; flex-direction: column; }
   .line-item, .pool-summary, .drain-row { grid-template-columns: minmax(0, 1fr); }
   .drain-row .confirm-row, .pin-field { grid-column: 1; }
