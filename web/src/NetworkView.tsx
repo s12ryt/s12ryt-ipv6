@@ -1,9 +1,22 @@
 import { FormEvent, useEffect, useState } from 'react'
-import { KeyRound, Play, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
+import { KeyRound, Play, Plus, Save, Trash2 } from 'lucide-react'
 import { APIError, ApiClient, ConnectivityCheck, Overview, ResolverConfig } from './api'
 import type { PanelMode } from './panelMode'
 
 type NetworkClient = Pick<ApiClient, 'mutate'>
+type NAT64Mode = 'automatic' | 'custom'
+
+type ResolverPreset = ResolverConfig & {
+  id: string
+  label: string
+}
+
+const resolverPresets: ResolverPreset[] = [
+  { id: 'cloudflare-primary', label: 'Cloudflare DNS64 主要', name: 'cloudflare-primary', address: '2606:4700:4700::64', port: 853, server_name: 'cloudflare-dns.com', enabled: true },
+  { id: 'cloudflare-secondary', label: 'Cloudflare DNS64 次要', name: 'cloudflare-secondary', address: '2606:4700:4700::6400', port: 853, server_name: 'cloudflare-dns.com', enabled: true },
+  { id: 'google-primary', label: 'Google DNS64 主要', name: 'google-primary', address: '2001:4860:4860::6464', port: 853, server_name: 'dns.google', enabled: true },
+  { id: 'google-secondary', label: 'Google DNS64 次要', name: 'google-secondary', address: '2001:4860:4860::64', port: 853, server_name: 'dns.google', enabled: true },
+]
 
 export function NetworkView({ mode, client, overview, onChange, onPasswordChanged }: {
   mode: PanelMode
@@ -13,13 +26,16 @@ export function NetworkView({ mode, client, overview, onChange, onPasswordChange
   onPasswordChanged: () => void
 }) {
   const [prefix, setPrefix] = useState(overview.nat64.prefix ?? '')
+  const [nat64Mode, setNAT64Mode] = useState<NAT64Mode>(overview.nat64.manual ? 'custom' : 'automatic')
   const [resolvers, setResolvers] = useState<ResolverConfig[]>(() => cloneResolvers(overview.resolvers))
+  const [resolverPreset, setResolverPreset] = useState('')
   const [checks, setChecks] = useState<ConnectivityCheck[] | null>(null)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
 
   useEffect(() => setResolvers(cloneResolvers(overview.resolvers)), [overview.resolvers])
   useEffect(() => setPrefix(overview.nat64.prefix ?? ''), [overview.nat64.prefix])
+  useEffect(() => setNAT64Mode(overview.nat64.manual ? 'custom' : 'automatic'), [overview.nat64.manual])
 
   const run = async (id: string, operation: () => Promise<void>, fallback: string) => {
     setBusy(id)
@@ -36,6 +52,7 @@ export function NetworkView({ mode, client, overview, onChange, onPasswordChange
   const updateNAT64 = (nextPrefix: string) => run('nat64', async () => {
     const nat64 = await client.mutate<Overview['nat64']>('/api/network/nat64', 'PUT', { prefix: nextPrefix.trim() })
     setPrefix(nat64.prefix ?? '')
+    setNAT64Mode(nat64.manual ? 'custom' : 'automatic')
     onChange({ ...overview, nat64 })
   }, 'NAT64 設定更新失敗')
 
@@ -52,6 +69,22 @@ export function NetworkView({ mode, client, overview, onChange, onPasswordChange
     setResolvers((current) => current.map((resolver, itemIndex) => itemIndex === index ? { ...resolver, ...patch } : resolver))
   }
 
+  const addResolverPreset = () => {
+    const preset = resolverPresets.find((item) => item.id === resolverPreset)
+    if (!preset || resolvers.some((resolver) => resolverMatchesPreset(resolver, preset))) return
+    setResolvers((current) => [...current, {
+      name: preset.name,
+      address: preset.address,
+      port: preset.port,
+      server_name: preset.server_name,
+      enabled: preset.enabled,
+    }])
+    setResolverPreset('')
+  }
+
+  const selectedPreset = resolverPresets.find((preset) => preset.id === resolverPreset)
+  const selectedPresetAdded = selectedPreset ? resolvers.some((resolver) => resolverMatchesPreset(resolver, selectedPreset)) : false
+
   return (
     <section aria-labelledby="page-title">
       <div className="page-heading"><div><p className="eyebrow">IPv6-only 資料平面</p><h1 id="page-title">網路</h1></div><StatusBadge state={overview.health} /></div>
@@ -65,11 +98,11 @@ export function NetworkView({ mode, client, overview, onChange, onPasswordChange
             <div><dt>最近檢查</dt><dd>{formatTime(overview.nat64.last_checked)}</dd></div>
           </dl>
           {overview.nat64.conflict && <p className="warning-note">探測結果互相衝突，目前採用優先 Resolver 的結果。</p>}
-          {mode === 'advanced' && <form className="inline-form" onSubmit={(event) => { event.preventDefault(); void updateNAT64(prefix) }}>
-            <label className="field"><span>NAT64 /96 前綴</span><input value={prefix} onChange={(event) => setPrefix(event.target.value)} placeholder="空白使用自動探索" /></label>
+          {mode === 'advanced' && <form className="inline-form" onSubmit={(event) => { event.preventDefault(); void updateNAT64(nat64Mode === 'custom' ? prefix : '') }}>
+            <label className="field"><span>NAT64 模式</span><select value={nat64Mode} onChange={(event) => setNAT64Mode(event.target.value as NAT64Mode)}><option value="automatic">自動探索</option><option value="custom">自訂 /96 前綴</option></select></label>
+            {nat64Mode === 'custom' && <label className="field"><span>NAT64 /96 前綴</span><input value={prefix} onChange={(event) => setPrefix(event.target.value)} placeholder="例如 64:ff9b::/96" required /></label>}
             <div className="form-actions">
               <button className="primary-button" type="submit" disabled={busy !== ''}><Save size={16} aria-hidden="true" />套用 NAT64 設定</button>
-              <button className="secondary-button" type="button" disabled={busy !== ''} onClick={() => void updateNAT64('')}><RotateCcw size={16} aria-hidden="true" />改用自動探索</button>
             </div>
           </form>}
         </section>
@@ -96,7 +129,9 @@ export function NetworkView({ mode, client, overview, onChange, onPasswordChange
           ))}
         </div>
         <div className="toolbar-row compact-toolbar">
-          <button className="secondary-button" type="button" onClick={() => setResolvers((current) => [...current, emptyResolver(current.length + 1)])}><Plus size={16} aria-hidden="true" />新增 Resolver</button>
+          <label className="field resolver-preset-field"><span>Resolver 預設</span><select value={resolverPreset} onChange={(event) => setResolverPreset(event.target.value)}><option value="">選擇可信 DNS64 預設</option>{resolverPresets.map((preset) => { const added = resolvers.some((resolver) => resolverMatchesPreset(resolver, preset)); return <option key={preset.id} value={preset.id} disabled={added}>{preset.label}{added ? '（已加入）' : ''}</option> })}</select></label>
+          <button className="secondary-button" type="button" disabled={!selectedPreset || selectedPresetAdded} onClick={addResolverPreset}><Plus size={16} aria-hidden="true" />加入 Resolver 預設</button>
+          <button className="secondary-button" type="button" onClick={() => setResolvers((current) => [...current, emptyResolver(current.length + 1)])}><Plus size={16} aria-hidden="true" />新增自訂 Resolver</button>
           <button className="primary-button" type="button" disabled={busy !== '' || resolvers.length === 0 || !resolvers.some((resolver) => resolver.enabled)} onClick={() => void saveResolvers()}><Save size={16} aria-hidden="true" />儲存 Resolver 設定</button>
         </div>
       </section> : <section className="resource-section" aria-labelledby="resolver-title">
@@ -133,4 +168,5 @@ function StatusBadge({ state, label }: { state: 'healthy' | 'degraded' | 'unheal
 
 function cloneResolvers(resolvers: ResolverConfig[]) { return resolvers.map((resolver) => ({ ...resolver })) }
 function emptyResolver(index: number): ResolverConfig { return { name: `resolver-${index}`, address: '', port: 853, server_name: '', enabled: true } }
+function resolverMatchesPreset(resolver: ResolverConfig, preset: ResolverPreset) { return resolver.address.trim().toLowerCase() === preset.address && resolver.port === preset.port }
 function formatTime(value?: string) { return value ? new Date(value).toLocaleString('zh-TW') : '尚未檢查' }
