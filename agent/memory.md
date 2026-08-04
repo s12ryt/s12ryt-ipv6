@@ -76,3 +76,9 @@
 - 品質審查另以 RED 重現基礎日誌統計仍顯示空白「操作」欄，GREEN 後桌面表格改為實際六欄，進階模式仍保留第七欄操作。
 - README 新增管理面板模式、五頁操作對照、代理／資源、三種 Linux IPv6 配置、DNS64／NAT64／DoT／DAD／ULA／freebind／wildcard／draining 與健康狀態詞彙表及建議操作順序。
 - 最終驗證：前端 7 files／28 tests、ESLint、TypeScript 與 Vite production build通過；Go全套測試、vet及web embed test通過。Playwright以去敏API mock驗證基礎／進階模式、表單狀態、localStorage與零mutation，並在375／768／1024／1440寬度逐一檢查五頁，40組均無document/workspace溢出或頂欄重疊；1440亮色與375深色視覺檢查無截斷，乾淨後續console無新增錯誤。
+- 完成網路候選與自動命名需求澄清並寫入 `agent/question.md` 第19節。Linux偵測只納入 UP、非 loopback 介面，以及位於 `2000::/3` 的原生全球 IPv6 地址／核心路由前綴；瀏覽器只透過登入保護 API 取得候選，不自行推測主機狀態。
+- 以TDD新增 `internal/network` discovery與Linux netlink adapter。相同介面／前綴會合併address、route來源，候選穩定排序；任一核心查詢錯誤時不回傳部分結果。`internal/admin`候選服務會將與既有範本相同、重疊或包含的候選標記為不可用，API錯誤固定去敏。
+- production builder已註冊登入保護的 `GET /api/discovery/network`；建立builder不會立即讀netlink，只有管理員請求候選時才偵測。Windows完成核心單測與Linux雙架構交叉編譯，未在真實Linux VPS執行netlink discovery。
+- 前端新增節點與資源自動命名、IPv6資源頁介面／CIDR候選與自訂備援。候選載入或刷新失敗時保留舊結果；衝突候選仍顯示原因但不可選。品質審查以RED重現表單先開啟、候選稍後抵達的時序問題，GREEN後僅未被管理員修改的表單會自動採用候選；明確切回自訂後不再被覆寫。
+- 進階網路頁將NAT64改為自動探索／自訂 `/96` 模式，並提供Cloudflare與Google四個DNS64端點預設；相同address+port的端點不可重複加入，自訂Resolver仍保留。基礎模式維持唯讀。
+- 本輪最終驗證：Go全套測試與vet、Linux amd64/arm64 build、network/firewall integration test binary交叉編譯、web embed test通過；前端8 files／34 tests、ESLint、TypeScript與Vite production build通過。Playwright以去敏API mock驗證候選衝突、介面切換、自動命名、NAT64模式與Resolver預設，並完成375／768／1024／1440、基礎／進階與五頁共40組無水平溢出檢查；console無新增錯誤。
