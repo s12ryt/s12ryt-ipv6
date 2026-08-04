@@ -48,6 +48,9 @@ describe('ResourcesView', () => {
     expect(screen.getByText('fixed-main')).toBeInTheDocument()
     expect(screen.getByText('drain-1')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '刷新 shared-main' }))
+    expect(mutate).not.toHaveBeenCalled()
+    const refreshDialog = screen.getByRole('dialog', { name: '刷新位址池 shared-main' })
+    await user.click(within(refreshDialog).getByRole('button', { name: '確認刷新' }))
     await waitFor(() => expect(mutate).toHaveBeenCalledWith('/api/resources/pools/shared-main/refresh', 'POST', {}))
     expect(onChange).toHaveBeenCalledWith({ ...snapshot, pools: [refreshed] })
   })
@@ -72,7 +75,7 @@ describe('ResourcesView', () => {
 	await user.type(within(templateForm).getByLabelText('自訂 Linux 介面'), 'eth1')
 	await user.type(within(templateForm).getByLabelText('自訂 IPv6 前綴'), '2001:4860:2::/56')
     await user.selectOptions(within(templateForm).getByLabelText('配置模式'), 'local-route-freebind')
-    await user.click(within(templateForm).getByRole('button', { name: '建立範本' }))
+    await user.click(screen.getByRole('button', { name: '建立範本' }))
     await waitFor(() => expect(mutate).toHaveBeenNthCalledWith(1, '/api/resources/templates', 'POST', template))
 
     await user.click(screen.getByRole('button', { name: '新增固定位址' }))
@@ -80,7 +83,7 @@ describe('ResourcesView', () => {
 	await user.clear(within(fixedForm).getByLabelText('名稱'))
     await user.type(within(fixedForm).getByLabelText('名稱'), 'fixed-auto')
     await user.selectOptions(within(fixedForm).getByLabelText('前綴範本'), 'wan')
-    await user.click(within(fixedForm).getByRole('button', { name: '建立固定位址' }))
+    await user.click(screen.getByRole('button', { name: '建立固定位址' }))
     await waitFor(() => expect(mutate).toHaveBeenNthCalledWith(2, '/api/resources/fixed', 'POST', { name: 'fixed-auto', template: 'wan' }))
 
     await user.click(screen.getByRole('button', { name: '新增位址池' }))
@@ -89,7 +92,7 @@ describe('ResourcesView', () => {
     await user.type(within(poolForm).getByLabelText('名稱'), 'inbound-main')
     await user.selectOptions(within(poolForm).getByLabelText('用途'), 'inbound')
     await user.selectOptions(within(poolForm).getByLabelText('前綴範本'), 'wan')
-    await user.click(within(poolForm).getByRole('button', { name: '建立位址池' }))
+    await user.click(screen.getByRole('button', { name: '建立位址池' }))
     await waitFor(() => expect(mutate).toHaveBeenNthCalledWith(3, '/api/resources/pools', 'POST', {
       name: 'inbound-main', kind: 'inbound', template: 'wan', capacity: 10, pinned: [],
     }))
@@ -103,14 +106,28 @@ describe('ResourcesView', () => {
 
     await user.click(screen.getByRole('button', { name: '強制終止 drain-1' }))
     expect(mutate).not.toHaveBeenCalled()
-    expect(screen.getByText(/會立即中止仍使用這批位址的連線/)).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '確認強制終止 drain-1' }))
+    const dialog = screen.getByRole('dialog', { name: '強制終止 drain-1' })
+    expect(within(dialog).getByText(/會立即中止仍使用這批位址的連線/)).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: '確認強制終止' }))
 
     await waitFor(() => expect(mutate).toHaveBeenCalledWith('/api/resources/pools/shared-main/drains/drain-1/force', 'POST', { confirm: true }))
     expect(onChange).toHaveBeenCalledWith({
       ...snapshot,
       pools: [{ ...snapshot.pools[0], draining: [] }],
     })
+  })
+
+  it('requires a modal confirmation before deleting a resource', async () => {
+    const user = userEvent.setup()
+    const mutate = vi.fn().mockResolvedValue(undefined)
+    render(<ResourcesView mode="advanced" client={resourceClient(mutate)} resources={snapshot} onChange={vi.fn()} />)
+
+    await user.click(screen.getByRole('button', { name: '刪除 wan' }))
+    expect(mutate).not.toHaveBeenCalled()
+    const dialog = screen.getByRole('dialog', { name: '刪除前綴範本 wan' })
+    await user.click(within(dialog).getByRole('button', { name: '確認刪除' }))
+
+    await waitFor(() => expect(mutate).toHaveBeenCalledWith('/api/resources/templates/wan', 'DELETE', {}))
   })
 
   it('uses safe resource defaults in basic mode while retaining refresh and force drain', async () => {
@@ -129,7 +146,7 @@ describe('ResourcesView', () => {
 	await user.selectOptions(within(templateForm).getByLabelText('Linux 介面'), '__custom')
 	await user.type(within(templateForm).getByLabelText('自訂 Linux 介面'), 'eth1')
 	await user.type(within(templateForm).getByLabelText('自訂 IPv6 前綴'), '2001:4860:2::/64')
-    await user.click(within(templateForm).getByRole('button', { name: '建立範本' }))
+    await user.click(screen.getByRole('button', { name: '建立範本' }))
     await waitFor(() => expect(mutate).toHaveBeenNthCalledWith(1, '/api/resources/templates', 'POST', template))
 
     await user.click(screen.getByRole('button', { name: '新增固定位址' }))
@@ -138,7 +155,7 @@ describe('ResourcesView', () => {
 	await user.clear(within(fixedForm).getByLabelText('名稱'))
     await user.type(within(fixedForm).getByLabelText('名稱'), 'basic-fixed')
     await user.selectOptions(within(fixedForm).getByLabelText('前綴範本'), 'wan')
-    await user.click(within(fixedForm).getByRole('button', { name: '建立固定位址' }))
+    await user.click(screen.getByRole('button', { name: '建立固定位址' }))
     await waitFor(() => expect(mutate).toHaveBeenNthCalledWith(2, '/api/resources/fixed', 'POST', { name: 'basic-fixed', template: 'wan' }))
 
     await user.click(screen.getByRole('button', { name: '新增位址池' }))
@@ -149,7 +166,7 @@ describe('ResourcesView', () => {
     await user.type(within(poolForm).getByLabelText('名稱'), 'basic-pool')
     await user.selectOptions(within(poolForm).getByLabelText('用途'), 'shared-outbound')
     await user.selectOptions(within(poolForm).getByLabelText('前綴範本'), 'wan')
-    await user.click(within(poolForm).getByRole('button', { name: '建立位址池' }))
+    await user.click(screen.getByRole('button', { name: '建立位址池' }))
     await waitFor(() => expect(mutate).toHaveBeenNthCalledWith(3, '/api/resources/pools', 'POST', {
       name: 'basic-pool', kind: 'shared-outbound', template: 'wan', capacity: 100, pinned: [],
     }))
