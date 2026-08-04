@@ -36,17 +36,21 @@ describe('NetworkView', () => {
 
     expect(screen.getByText('inet filter input policy drop')).toBeInTheDocument()
     expect(screen.getByText(/探測結果互相衝突/)).toBeInTheDocument()
-	await user.selectOptions(screen.getByLabelText('NAT64 模式'), 'custom')
-    await user.clear(screen.getByLabelText('NAT64 /96 前綴'))
-    await user.type(screen.getByLabelText('NAT64 /96 前綴'), '2001:db8:64::/96')
-    await user.click(screen.getByRole('button', { name: '套用 NAT64 設定' }))
+	await user.click(screen.getByRole('button', { name: '設定 NAT64' }))
+	const nat64Dialog = screen.getByRole('dialog', { name: '設定 NAT64' })
+	await user.selectOptions(within(nat64Dialog).getByLabelText('NAT64 模式'), 'custom')
+    await user.clear(within(nat64Dialog).getByLabelText('NAT64 /96 前綴'))
+    await user.type(within(nat64Dialog).getByLabelText('NAT64 /96 前綴'), '2001:db8:64::/96')
+    await user.click(within(nat64Dialog).getByRole('button', { name: '套用 NAT64 設定' }))
 
     await waitFor(() => expect(mutate).toHaveBeenNthCalledWith(1, '/api/network/nat64', 'PUT', { prefix: '2001:db8:64::/96' }))
     expect(onChange).toHaveBeenNthCalledWith(1, { ...overview, nat64: updated })
 
-	await user.selectOptions(screen.getByLabelText('NAT64 模式'), 'automatic')
-	expect(screen.queryByLabelText('NAT64 /96 前綴')).not.toBeInTheDocument()
-	await user.click(screen.getByRole('button', { name: '套用 NAT64 設定' }))
+	await user.click(screen.getByRole('button', { name: '設定 NAT64' }))
+	const automaticDialog = screen.getByRole('dialog', { name: '設定 NAT64' })
+	await user.selectOptions(within(automaticDialog).getByLabelText('NAT64 模式'), 'automatic')
+	expect(within(automaticDialog).queryByLabelText('NAT64 /96 前綴')).not.toBeInTheDocument()
+	await user.click(within(automaticDialog).getByRole('button', { name: '套用 NAT64 設定' }))
     await waitFor(() => expect(mutate).toHaveBeenNthCalledWith(2, '/api/network/nat64', 'PUT', { prefix: '' }))
     expect(onChange).toHaveBeenNthCalledWith(2, { ...overview, nat64: automatic })
   })
@@ -61,10 +65,12 @@ describe('NetworkView', () => {
     const onChange = vi.fn()
     render(<NetworkView mode="advanced" client={{ mutate } as Pick<ApiClient, 'mutate'>} overview={overview} onChange={onChange} onPasswordChanged={vi.fn()} />)
 
-    const resolver = screen.getByRole('group', { name: 'Resolver cloudflare-primary' })
+    await user.click(screen.getByRole('button', { name: '編輯 Resolver' }))
+    const resolverDialog = screen.getByRole('dialog', { name: '編輯 Resolver' })
+    const resolver = within(resolverDialog).getByRole('group', { name: 'Resolver cloudflare-primary' })
     await user.clear(within(resolver).getByLabelText('IPv6 位址'))
     await user.type(within(resolver).getByLabelText('IPv6 位址'), '2606:4700:4700::6400')
-    await user.click(screen.getByRole('button', { name: '儲存 Resolver 設定' }))
+    await user.click(within(resolverDialog).getByRole('button', { name: '儲存 Resolver 設定' }))
 
     await waitFor(() => expect(mutate).toHaveBeenNthCalledWith(1, '/api/network/resolvers', 'PUT', {
       resolvers: [
@@ -93,17 +99,19 @@ describe('NetworkView', () => {
 		const mutate = vi.fn().mockResolvedValue(undefined)
 		render(<NetworkView mode="advanced" client={{ mutate } as Pick<ApiClient, 'mutate'>} overview={overview} onChange={vi.fn()} onPasswordChanged={vi.fn()} />)
 
-		const presets = screen.getByLabelText('Resolver 預設')
+		await user.click(screen.getByRole('button', { name: '編輯 Resolver' }))
+		const dialog = screen.getByRole('dialog', { name: '編輯 Resolver' })
+		const presets = within(dialog).getByLabelText('Resolver 預設')
 		expect(within(presets).getByRole('option', { name: /Cloudflare DNS64 主要.*已加入/ })).toBeDisabled()
 		await user.selectOptions(presets, 'cloudflare-secondary')
-		await user.click(screen.getByRole('button', { name: '加入 Resolver 預設' }))
+		await user.click(within(dialog).getByRole('button', { name: '加入 Resolver 預設' }))
 
-		const added = screen.getByRole('group', { name: 'Resolver cloudflare-secondary' })
+		const added = within(dialog).getByRole('group', { name: 'Resolver cloudflare-secondary' })
 		expect(within(added).getByLabelText('IPv6 位址')).toHaveValue('2606:4700:4700::6400')
 		expect(within(added).getByLabelText('連接埠')).toHaveValue(853)
 		expect(within(added).getByLabelText('TLS Server Name')).toHaveValue('cloudflare-dns.com')
 		expect(within(presets).getByRole('option', { name: /Cloudflare DNS64 次要.*已加入/ })).toBeDisabled()
-		expect(screen.getByRole('button', { name: '新增自訂 Resolver' })).toBeInTheDocument()
+		expect(within(dialog).getByRole('button', { name: '新增自訂 Resolver' })).toBeInTheDocument()
 	})
 
   it('validates the replacement password and returns to login after a successful change', async () => {
@@ -112,15 +120,16 @@ describe('NetworkView', () => {
     const onPasswordChanged = vi.fn()
     render(<NetworkView mode="advanced" client={{ mutate } as Pick<ApiClient, 'mutate'>} overview={overview} onChange={vi.fn()} onPasswordChanged={onPasswordChanged} />)
 
+    await user.click(screen.getByRole('button', { name: '設定管理員密碼' }))
     const form = screen.getByRole('form', { name: '變更管理員密碼' })
     await user.type(within(form).getByLabelText('目前密碼'), 'current-password-value')
     await user.type(within(form).getByLabelText('新密碼'), 'replacement-password')
     await user.type(within(form).getByLabelText('確認新密碼'), 'different-password')
-    expect(within(form).getByRole('button', { name: '變更密碼' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '變更密碼' })).toBeDisabled()
 
     await user.clear(within(form).getByLabelText('確認新密碼'))
     await user.type(within(form).getByLabelText('確認新密碼'), 'replacement-password')
-    await user.click(within(form).getByRole('button', { name: '變更密碼' }))
+    await user.click(screen.getByRole('button', { name: '變更密碼' }))
 
     await waitFor(() => expect(mutate).toHaveBeenCalledWith('/api/admin/password', 'POST', {
       current_password: 'current-password-value',
@@ -134,7 +143,8 @@ describe('NetworkView', () => {
 
     expect(screen.getByText('inet filter input policy drop')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '執行連通性測試' })).toBeInTheDocument()
-    expect(screen.getByRole('form', { name: '變更管理員密碼' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '設定管理員密碼' })).toBeInTheDocument()
+    expect(screen.queryByRole('form', { name: '變更管理員密碼' })).not.toBeInTheDocument()
     expect(screen.queryByLabelText('NAT64 /96 前綴')).not.toBeInTheDocument()
 	expect(screen.queryByLabelText('NAT64 模式')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '儲存 Resolver 設定' })).not.toBeInTheDocument()
