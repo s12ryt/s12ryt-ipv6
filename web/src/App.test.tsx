@@ -200,6 +200,7 @@ describe('App', () => {
 
     await user.click(screen.getByRole('button', { name: '節點' }))
     await user.click(screen.getByRole('button', { name: '新增節點' }))
+    await user.clear(screen.getByLabelText('顯示名稱'))
     await user.type(screen.getByLabelText('顯示名稱'), '未完成的節點')
     expect(screen.queryByLabelText('TCP 上限')).not.toBeInTheDocument()
 

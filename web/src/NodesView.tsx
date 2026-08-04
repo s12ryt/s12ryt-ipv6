@@ -1,6 +1,7 @@
 import { FormEvent, ReactNode, useState } from 'react'
 import { Copy, Eye, EyeOff, Pencil, Play, Plus, RotateCcw, Square, Trash2, X } from 'lucide-react'
 import { APIError, ApiClient, InboundMode, NodeMutation, NodeProtocol, NodeRecord, ResourceSnapshot, ULAOverride } from './api'
+import { nextNodeIdentity } from './automaticNames'
 import type { PanelMode } from './panelMode'
 
 type NodeClient = Pick<ApiClient, 'mutate'>
@@ -136,7 +137,7 @@ export function NodesView({ mode, client, nodes, resources, onChange }: NodesVie
     <section aria-labelledby="page-title">
       <div className="page-heading">
         <div><p className="eyebrow">代理服務</p><h1 id="page-title">節點</h1></div>
-        <button className="primary-button" type="button" onClick={() => { setEditingID(''); setForm(defaultForm(resources)) }}>
+        <button className="primary-button" type="button" onClick={() => { setEditingID(''); setForm(defaultForm(resources, nodes)) }}>
           <Plus size={17} aria-hidden="true" />新增節點
         </button>
       </div>
@@ -252,10 +253,11 @@ function mutationFromForm(form: NodeFormState): NodeMutation {
   }
 }
 
-function defaultForm(resources: ResourceSnapshot): NodeFormState {
+function defaultForm(resources: ResourceSnapshot, nodes: NodeRecord[]): NodeFormState {
   const inboundResource = resources.fixed[0]?.name ?? resources.pools.find((item) => item.kind === 'inbound')?.name ?? ''
   const outbound = resources.fixed[0]?.name ?? resources.pools.find((item) => item.kind !== 'inbound')?.name ?? ''
-  return { ...emptyForm, inboundResource, outbound }
+  const identity = nextNodeIdentity(nodes)
+  return { ...emptyForm, ...identity, inboundResource, outbound }
 }
 
 function inboundLabel(mode: InboundMode) {

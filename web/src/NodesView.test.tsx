@@ -73,7 +73,11 @@ describe('NodesView', () => {
     render(<NodesView mode="advanced" client={{ mutate } as Pick<ApiClient, 'mutate'>} nodes={[]} resources={resources} onChange={onChange} />)
 
     await user.click(screen.getByRole('button', { name: '新增節點' }))
+	expect(screen.getByLabelText('節點 ID')).toHaveValue('node-001')
+	expect(screen.getByLabelText('顯示名稱')).toHaveValue('節點 1')
+	await user.clear(screen.getByLabelText('節點 ID'))
     await user.type(screen.getByLabelText('節點 ID'), 'edge-2')
+	await user.clear(screen.getByLabelText('顯示名稱'))
     await user.type(screen.getByLabelText('顯示名稱'), '新加坡出口')
     await user.selectOptions(screen.getByLabelText('出站資源'), 'shared-main')
 	await user.selectOptions(screen.getByLabelText('IPv6 入站資源'), 'inbound-main')
