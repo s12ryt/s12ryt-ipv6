@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"strings"
@@ -41,6 +42,7 @@ type productionPlatform struct {
 	managementListen   ManagementListenFunc
 	controlListen      func(string) (net.Listener, error)
 	newQueryer         func(time.Duration) (dns64.Queryer, error)
+	discovery          network.NetworkDiscovery
 	frontend           fs.FS
 	hostAddresses      func() ([]netip.Addr, error)
 	connector          func(string, bool) proxy.Connector
@@ -67,6 +69,7 @@ type productionService struct {
 	close   func() error
 	once    sync.Once
 	err     error
+	handler http.Handler
 }
 
 func (s *productionService) Run(ctx context.Context) error {
@@ -76,6 +79,10 @@ func (s *productionService) Run(ctx context.Context) error {
 }
 
 func BuildProduction(options ProductionOptions) (ProductionService, error) {
+	discovery, err := network.NewLinuxNetworkDiscovery()
+	if err != nil {
+		return nil, err
+	}
 	queryer := func(timeout time.Duration) (dns64.Queryer, error) {
 		return dns64.NewDoTQueryer(timeout, netip.Addr{})
 	}
@@ -85,7 +92,7 @@ func BuildProduction(options ProductionOptions) (ProductionService, error) {
 		controlListen: func(path string) (net.Listener, error) {
 			return listenPreparedControlSocket(path, prepareControlSocket, admin.ListenControlSocket)
 		},
-		newQueryer: queryer, frontend: webui.Dist,
+		newQueryer: queryer, discovery: discovery, frontend: webui.Dist,
 		hostAddresses: SystemHostAddresses,
 		connector: func(iface string, freebind bool) proxy.Connector {
 			return proxy.NewSystemConnector(iface, freebind)
@@ -99,7 +106,7 @@ func buildProduction(options ProductionOptions, platform productionPlatform) (_ 
 	}
 	if platform.newKernel == nil || platform.newFirewallBackend == nil || platform.binder == nil ||
 		platform.managementListen == nil || platform.controlListen == nil || platform.newQueryer == nil ||
-		platform.frontend == nil || platform.hostAddresses == nil || platform.connector == nil {
+		platform.discovery == nil || platform.frontend == nil || platform.hostAddresses == nil || platform.connector == nil {
 		return nil, errors.New("production platform is incomplete")
 	}
 	paths, err := NewDataPaths(options.DataDirectory)
@@ -373,6 +380,15 @@ func buildProduction(options ProductionOptions, platform productionPlatform) (_ 
 	if err := httpServer.SetResourceService(resources); err != nil {
 		return nil, err
 	}
+	candidates, err := admin.NewNetworkCandidateService(platform.discovery, func() admin.ResourceSnapshot {
+		return resources.Snapshot()
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := httpServer.SetNetworkCandidateService(candidates); err != nil {
+		return nil, err
+	}
 	if err := httpServer.SetOperationsService(operations); err != nil {
 		return nil, err
 	}
@@ -449,7 +465,7 @@ func buildProduction(options ProductionOptions, platform productionPlatform) (_ 
 		return nil, err
 	}
 	cleanupLog = false
-	return &productionService{service: service, close: logger.Close}, nil
+	return &productionService{service: service, close: logger.Close, handler: httpServer.Handler()}, nil
 }
 
 func productionResolverEndpoints(values []config.Resolver) ([]dns64.Endpoint, error) {

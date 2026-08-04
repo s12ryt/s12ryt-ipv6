@@ -6,6 +6,8 @@ import (
 	"io"
 	"io/fs"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"testing"
@@ -66,6 +68,12 @@ func (productionTestQueryer) Query(context.Context, dns64.Endpoint, string, dns6
 	return dns64.QueryResult{}, dns64.ErrNAT64Unavailable
 }
 
+type productionTestDiscovery struct{}
+
+func (productionTestDiscovery) Discover(context.Context) (network.NetworkDiscoverySnapshot, error) {
+	return network.NetworkDiscoverySnapshot{}, nil
+}
+
 func productionTestPlatform(frontend fs.FS) productionPlatform {
 	return productionPlatform{
 		newKernel:          func() (network.Kernel, error) { return productionTestKernel{}, nil },
@@ -76,6 +84,7 @@ func productionTestPlatform(frontend fs.FS) productionPlatform {
 		},
 		controlListen: func(string) (net.Listener, error) { return nil, io.ErrClosedPipe },
 		newQueryer:    func(time.Duration) (dns64.Queryer, error) { return productionTestQueryer{}, nil },
+		discovery:     productionTestDiscovery{},
 		frontend:      frontend,
 		hostAddresses: func() ([]netip.Addr, error) { return []netip.Addr{netip.MustParseAddr("2001:db8::1")}, nil },
 		connector:     func(string, bool) proxy.Connector { return proxy.NewSystemConnector("", false) },
@@ -102,6 +111,11 @@ func TestBuildProductionCreatesCompleteServiceAndDurableBootstrapFiles(t *testin
 		t.Fatalf("buildProduction() type = %T, want *productionService", service)
 	}
 	t.Cleanup(func() { _ = built.close() })
+	discoveryResponse := httptest.NewRecorder()
+	built.handler.ServeHTTP(discoveryResponse, httptest.NewRequest(http.MethodGet, "http://manager.example:34466/api/discovery/network", nil))
+	if discoveryResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("network discovery without session status = %d", discoveryResponse.Code)
+	}
 
 	paths, err := NewDataPaths(directory)
 	if err != nil {
