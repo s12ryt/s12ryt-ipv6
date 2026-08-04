@@ -61,3 +61,14 @@
 - [x] 實作節點資料夾列表、收合、整批複製、啟停與刪除 UI。
 - [x] 執行完整 Go／前端回歸、Linux 雙架構 build及 Playwright 驗收。
 - [x] 完成品質審查並更新治理紀錄。
+
+## 2026-08-04：管理面板排版、自定義控制項、Modal 與動畫
+
+- [x] 以TDD建立可及性modal、focus trap、髒表單確認與背景鎖定基礎。
+- [x] 以TDD實作統一input、select、textarea與checkbox視覺元件／樣式。
+- [x] 實作可收合桌面側欄、瀏覽器偏好與主頁內容排版。
+- [x] 將節點與批次節點表單／寫入操作遷移至modal及三步流程。
+- [x] 將IPv6資源、網路、日誌寫入與危險操作遷移至modal。
+- [x] 實作原生CSS動畫與`prefers-reduced-motion`降級。
+- [x] 執行完整前端回歸、lint、build與Playwright多尺寸／鍵盤驗收。
+- [x] 完成品質審查並更新治理紀錄。
