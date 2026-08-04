@@ -10,6 +10,18 @@ export function nextNodeIdentity(existing: Array<{ id: string; name: string }>) 
   }
 }
 
+export function nextNodeIdentities(existing: Array<{ id: string; name: string }>, count: number) {
+  const generated: Array<{ id: string; name: string }> = []
+  for (let index = 0; index < count; index += 1) {
+    generated.push(nextNodeIdentity([...existing, ...generated]))
+  }
+  return generated
+}
+
+export function nextBatchFolderName(existing: string[]) {
+  return nextIndexedName('批次', existing)
+}
+
 export function nextPrefixTemplateName(device: string, existing: string[]) {
   return nextIndexedName(`前綴 ${device.trim() || '介面'}`, existing)
 }
