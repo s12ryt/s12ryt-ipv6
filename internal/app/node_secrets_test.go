@@ -15,6 +15,9 @@ type secretTestNodeService struct {
 func (s *secretTestNodeService) Create(context.Context, node.Config, bool) (node.Node, error) {
 	return s.created, nil
 }
+func (s *secretTestNodeService) CreateBatch(context.Context, []node.Config, bool) ([]node.Node, error) {
+	return []node.Node{s.created}, nil
+}
 func (s *secretTestNodeService) Update(context.Context, string, node.Config, bool) (node.Node, error) {
 	return s.updated, nil
 }
@@ -25,8 +28,14 @@ func (s *secretTestNodeService) Stop(context.Context, string) (node.Node, error)
 	return node.Node{}, nil
 }
 func (s *secretTestNodeService) Delete(context.Context, string) error { return nil }
-func (s *secretTestNodeService) Get(string) (node.Node, bool)         { return node.Node{}, false }
-func (s *secretTestNodeService) List() []node.Node                    { return nil }
+func (s *secretTestNodeService) MoveToFolder(context.Context, string, string) (node.Node, error) {
+	return node.Node{}, nil
+}
+func (s *secretTestNodeService) RenameFolder(context.Context, string, string) ([]node.Node, error) {
+	return nil, nil
+}
+func (s *secretTestNodeService) Get(string) (node.Node, bool) { return node.Node{}, false }
+func (s *secretTestNodeService) List() []node.Node            { return nil }
 
 type secretTestRegistrar struct {
 	values []string

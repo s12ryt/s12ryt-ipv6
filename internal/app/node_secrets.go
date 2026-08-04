@@ -32,6 +32,16 @@ func (s *secretRegisteringNodeService) Create(ctx context.Context, config node.C
 	return created, err
 }
 
+func (s *secretRegisteringNodeService) CreateBatch(ctx context.Context, configs []node.Config, confirm bool) ([]node.Node, error) {
+	created, err := s.delegate.CreateBatch(ctx, configs, confirm)
+	if err == nil {
+		for _, current := range created {
+			s.register(current)
+		}
+	}
+	return created, err
+}
+
 func (s *secretRegisteringNodeService) Update(ctx context.Context, id string, config node.Config, confirm bool) (node.Node, error) {
 	updated, err := s.delegate.Update(ctx, id, config, confirm)
 	if err == nil || errors.Is(err, node.ErrPreviousRuntimeCleanup) {
@@ -50,6 +60,14 @@ func (s *secretRegisteringNodeService) Stop(ctx context.Context, id string) (nod
 
 func (s *secretRegisteringNodeService) Delete(ctx context.Context, id string) error {
 	return s.delegate.Delete(ctx, id)
+}
+
+func (s *secretRegisteringNodeService) MoveToFolder(ctx context.Context, id, folder string) (node.Node, error) {
+	return s.delegate.MoveToFolder(ctx, id, folder)
+}
+
+func (s *secretRegisteringNodeService) RenameFolder(ctx context.Context, source, target string) ([]node.Node, error) {
+	return s.delegate.RenameFolder(ctx, source, target)
 }
 
 func (s *secretRegisteringNodeService) Get(id string) (node.Node, bool) {

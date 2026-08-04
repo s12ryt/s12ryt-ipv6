@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/s12ryt/s12ryt-ipv6/internal/node"
 )
@@ -15,8 +16,12 @@ import (
 type fakeNodeService struct {
 	nodes         map[string]node.Node
 	lastConfig    node.Config
+	lastConfigs   []node.Config
 	lastConfirmed bool
 	operationErr  error
+	startErrors   map[string]error
+	stopErrors    map[string]error
+	deleteErrors  map[string]error
 }
 
 func (s *fakeNodeService) Create(_ context.Context, config node.Config, confirmed bool) (node.Node, error) {
@@ -26,6 +31,20 @@ func (s *fakeNodeService) Create(_ context.Context, config node.Config, confirme
 	}
 	created := node.Node{Config: config, Status: node.StatusRunning}
 	s.nodes[config.ID] = created
+	return created, nil
+}
+
+func (s *fakeNodeService) CreateBatch(_ context.Context, configs []node.Config, confirmed bool) ([]node.Node, error) {
+	s.lastConfigs, s.lastConfirmed = append([]node.Config(nil), configs...), confirmed
+	if s.operationErr != nil {
+		return nil, s.operationErr
+	}
+	created := make([]node.Node, 0, len(configs))
+	for _, config := range configs {
+		current := node.Node{Config: config, Status: node.StatusRunning}
+		s.nodes[config.ID] = current
+		created = append(created, current)
+	}
 	return created, nil
 }
 
@@ -40,6 +59,9 @@ func (s *fakeNodeService) Update(_ context.Context, id string, config node.Confi
 }
 
 func (s *fakeNodeService) Start(_ context.Context, id string) (node.Node, error) {
+	if err := s.startErrors[id]; err != nil {
+		return node.Node{}, err
+	}
 	if s.operationErr != nil {
 		return node.Node{}, s.operationErr
 	}
@@ -53,6 +75,9 @@ func (s *fakeNodeService) Start(_ context.Context, id string) (node.Node, error)
 }
 
 func (s *fakeNodeService) Stop(_ context.Context, id string) (node.Node, error) {
+	if err := s.stopErrors[id]; err != nil {
+		return node.Node{}, err
+	}
 	if s.operationErr != nil {
 		return node.Node{}, s.operationErr
 	}
@@ -66,6 +91,9 @@ func (s *fakeNodeService) Stop(_ context.Context, id string) (node.Node, error) 
 }
 
 func (s *fakeNodeService) Delete(_ context.Context, id string) error {
+	if err := s.deleteErrors[id]; err != nil {
+		return err
+	}
 	if s.operationErr != nil {
 		return s.operationErr
 	}
@@ -87,6 +115,35 @@ func (s *fakeNodeService) List() []node.Node {
 		result = append(result, value)
 	}
 	return result
+}
+
+func (s *fakeNodeService) MoveToFolder(_ context.Context, id, folder string) (node.Node, error) {
+	current, exists := s.nodes[id]
+	if !exists {
+		return node.Node{}, node.ErrNodeNotFound
+	}
+	current.Config.Folder = folder
+	s.nodes[id] = current
+	return current, nil
+}
+
+func (s *fakeNodeService) RenameFolder(_ context.Context, source, target string) ([]node.Node, error) {
+	if s.operationErr != nil {
+		return nil, s.operationErr
+	}
+	result := make([]node.Node, 0)
+	for id, current := range s.nodes {
+		if current.Config.Folder != source {
+			continue
+		}
+		current.Config.Folder = target
+		s.nodes[id] = current
+		result = append(result, current)
+	}
+	if len(result) == 0 {
+		return nil, node.ErrFolderNotFound
+	}
+	return result, nil
 }
 
 func loginForMutation(t *testing.T, server *HTTPServer) (*http.Cookie, string) {
@@ -248,6 +305,130 @@ func TestHTTPServerNodeCredentialsModeGeneratesMissingCredentials(t *testing.T) 
 	}
 	if result.Authentication != "credentials" || result.Username == "" || result.Password == "" {
 		t.Fatalf("response credentials = %#v", result)
+	}
+}
+
+func TestHTTPServerCreatesNodeBatchWithIndependentCredentials(t *testing.T) {
+	service := &fakeNodeService{nodes: make(map[string]node.Node)}
+	server := newTestHTTPServer(t, &fakePasswordAuthenticator{password: "correct-password-value"}, 5, 500, func() HealthState { return HealthHealthy })
+	if err := server.SetNodeService(service); err != nil {
+		t.Fatal(err)
+	}
+	cookie, csrf := loginForMutation(t, server)
+	body := `{
+		"folder":"  批次 1  ","confirm_unauthenticated":false,
+		"nodes":[
+			{"id":"node-001","name":"節點 1","protocol":"mixed","authentication":"credentials","max_tcp":4096,"max_udp":1024,"dial_timeout":"10s","handshake_timeout":"30s","tunnel_idle_timeout":"0s","udp_idle_timeout":"5m","ula_override":"inherit","outbound":"shared-out","port":0,"inbound_mode":"ipv6","inbound_resource":"pool-in"},
+			{"id":"node-002","name":"節點 2","protocol":"mixed","authentication":"credentials","max_tcp":4096,"max_udp":1024,"dial_timeout":"10s","handshake_timeout":"30s","tunnel_idle_timeout":"0s","udp_idle_timeout":"5m","ula_override":"inherit","outbound":"shared-out","port":0,"inbound_mode":"ipv6","inbound_resource":"pool-in"}
+		]
+	}`
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, mutationRequest(http.MethodPost, "/api/nodes/batch", body, cookie, csrf))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("batch status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if len(service.lastConfigs) != 2 || service.lastConfigs[0].Folder != "批次 1" || service.lastConfigs[1].Folder != "批次 1" {
+		t.Fatalf("batch configs = %#v", service.lastConfigs)
+	}
+	first, second := service.lastConfigs[0], service.lastConfigs[1]
+	if first.Username == "" || first.Password == "" || second.Username == "" || second.Password == "" ||
+		(first.Username == second.Username && first.Password == second.Password) {
+		t.Fatalf("batch credentials were not independently generated: %#v", service.lastConfigs)
+	}
+	if service.lastConfirmed {
+		t.Fatal("authenticated batch unexpectedly confirmed public proxy risk")
+	}
+}
+
+func TestHTTPServerRejectsInvalidNodeBatchBeforeCallingService(t *testing.T) {
+	service := &fakeNodeService{nodes: make(map[string]node.Node)}
+	server := newTestHTTPServer(t, &fakePasswordAuthenticator{password: "correct-password-value"}, 5, 500, func() HealthState { return HealthHealthy })
+	if err := server.SetNodeService(service); err != nil {
+		t.Fatal(err)
+	}
+	cookie, csrf := loginForMutation(t, server)
+	for name, body := range map[string]string{
+		"empty":          `{"folder":"批次 1","nodes":[]}`,
+		"missing folder": `{"nodes":[{}]}`,
+		"explicit credentials": `{"folder":"批次 1","nodes":[
+			{"id":"node-1","name":"one","protocol":"mixed","authentication":"credentials","username":"manual","password":"manual-password-value","max_tcp":1,"max_udp":1,"dial_timeout":"1s","handshake_timeout":"1s","tunnel_idle_timeout":"0s","udp_idle_timeout":"1s","outbound":"fixed","inbound_mode":"ipv4"}
+		]}`,
+		"mixed settings": `{"folder":"批次 1","nodes":[
+			{"id":"node-1","name":"one","protocol":"http","authentication":"none","max_tcp":1,"max_udp":1,"dial_timeout":"1s","handshake_timeout":"1s","tunnel_idle_timeout":"0s","udp_idle_timeout":"1s","outbound":"fixed","inbound_mode":"ipv4"},
+			{"id":"node-2","name":"two","protocol":"socks","authentication":"none","max_tcp":1,"max_udp":1,"dial_timeout":"1s","handshake_timeout":"1s","tunnel_idle_timeout":"0s","udp_idle_timeout":"1s","outbound":"fixed","inbound_mode":"ipv4"}
+		],"confirm_unauthenticated":true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, mutationRequest(http.MethodPost, "/api/nodes/batch", body, cookie, csrf))
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+			}
+		})
+	}
+	if len(service.lastConfigs) != 0 {
+		t.Fatalf("service received invalid batch = %#v", service.lastConfigs)
+	}
+}
+
+func TestHTTPServerMovesAndRenamesNodeFolders(t *testing.T) {
+	config := validAdminNodeConfig("node-1", "one")
+	config.Folder = "來源"
+	service := &fakeNodeService{nodes: map[string]node.Node{"node-1": {Config: config, Status: node.StatusRunning}}}
+	server := newTestHTTPServer(t, &fakePasswordAuthenticator{password: "correct-password-value"}, 5, 500, func() HealthState { return HealthHealthy })
+	if err := server.SetNodeService(service); err != nil {
+		t.Fatal(err)
+	}
+	cookie, csrf := loginForMutation(t, server)
+
+	move := httptest.NewRecorder()
+	server.Handler().ServeHTTP(move, mutationRequest(http.MethodPut, "/api/nodes/node-1/folder", `{"folder":"目標"}`, cookie, csrf))
+	if move.Code != http.StatusOK || service.nodes["node-1"].Config.Folder != "目標" {
+		t.Fatalf("move response = %d %s", move.Code, move.Body.String())
+	}
+	rename := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rename, mutationRequest(http.MethodPut, "/api/node-folders/rename", `{"source":"目標","target":"新名稱"}`, cookie, csrf))
+	if rename.Code != http.StatusOK || service.nodes["node-1"].Config.Folder != "新名稱" {
+		t.Fatalf("rename response = %d %s", rename.Code, rename.Body.String())
+	}
+}
+
+func TestHTTPServerFolderActionsAttemptEveryNodeAndReportFailures(t *testing.T) {
+	first := validAdminNodeConfig("node-1", "one")
+	first.Folder = "批次 1"
+	second := validAdminNodeConfig("node-2", "two")
+	second.Folder = "批次 1"
+	service := &fakeNodeService{
+		nodes: map[string]node.Node{
+			"node-1": {Config: first, Status: node.StatusStopped},
+			"node-2": {Config: second, Status: node.StatusStopped},
+		},
+		startErrors: map[string]error{"node-2": errors.New("secret runtime detail")},
+	}
+	server := newTestHTTPServer(t, &fakePasswordAuthenticator{password: "correct-password-value"}, 5, 500, func() HealthState { return HealthHealthy })
+	if err := server.SetNodeService(service); err != nil {
+		t.Fatal(err)
+	}
+	cookie, csrf := loginForMutation(t, server)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, mutationRequest(http.MethodPost, "/api/node-folders/action", `{"folder":"批次 1","action":"start"}`, cookie, csrf))
+	if response.Code != http.StatusMultiStatus || strings.Contains(response.Body.String(), "secret runtime detail") ||
+		!strings.Contains(response.Body.String(), `"succeeded":["node-1"]`) || !strings.Contains(response.Body.String(), `"id":"node-2"`) {
+		t.Fatalf("folder action response = %d %s", response.Code, response.Body.String())
+	}
+	if service.nodes["node-1"].Status != node.StatusRunning {
+		t.Fatalf("successful node status = %q", service.nodes["node-1"].Status)
+	}
+}
+
+func validAdminNodeConfig(id, name string) node.Config {
+	return node.Config{
+		ID: id, Name: name, Protocol: node.ProtocolMixed,
+		Username: "proxy-user", Password: "proxy-password-value",
+		MaxTCP: 4096, MaxUDP: 1024,
+		DialTimeout: 10 * time.Second, HandshakeTimeout: 30 * time.Second,
+		UDPIdleTimeout: 5 * time.Minute, ULAOverride: "inherit", Outbound: "shared-out",
+		InboundMode: node.InboundIPv6, InboundResource: "pool-in",
 	}
 }
 

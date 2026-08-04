@@ -16,10 +16,13 @@ import (
 
 type NodeService interface {
 	Create(context.Context, node.Config, bool) (node.Node, error)
+	CreateBatch(context.Context, []node.Config, bool) ([]node.Node, error)
 	Update(context.Context, string, node.Config, bool) (node.Node, error)
 	Start(context.Context, string) (node.Node, error)
 	Stop(context.Context, string) (node.Node, error)
 	Delete(context.Context, string) error
+	MoveToFolder(context.Context, string, string) (node.Node, error)
+	RenameFolder(context.Context, string, string) ([]node.Node, error)
 	Get(string) (node.Node, bool)
 	List() []node.Node
 }
@@ -27,6 +30,7 @@ type NodeService interface {
 type nodeDTO struct {
 	ID                     string             `json:"id"`
 	Name                   string             `json:"name"`
+	Folder                 string             `json:"folder,omitempty"`
 	Protocol               node.Protocol      `json:"protocol"`
 	Authentication         string             `json:"authentication,omitempty"`
 	Username               string             `json:"username,omitempty"`
@@ -46,6 +50,37 @@ type nodeDTO struct {
 	ConfirmUnauthenticated bool               `json:"confirm_unauthenticated,omitempty"`
 	Status                 node.Status        `json:"status,omitempty"`
 	Warning                string             `json:"warning,omitempty"`
+}
+
+type nodeBatchDTO struct {
+	Folder                 string    `json:"folder"`
+	ConfirmUnauthenticated bool      `json:"confirm_unauthenticated,omitempty"`
+	Nodes                  []nodeDTO `json:"nodes"`
+}
+
+type folderMoveDTO struct {
+	Folder string `json:"folder"`
+}
+
+type folderRenameDTO struct {
+	Source string `json:"source"`
+	Target string `json:"target"`
+}
+
+type folderActionDTO struct {
+	Folder  string `json:"folder"`
+	Action  string `json:"action"`
+	Confirm bool   `json:"confirm,omitempty"`
+}
+
+type folderActionFailure struct {
+	ID    string `json:"id"`
+	Error string `json:"error"`
+}
+
+type folderActionResponse struct {
+	Succeeded []string              `json:"succeeded"`
+	Failed    []folderActionFailure `json:"failed"`
 }
 
 func (s *HTTPServer) SetNodeService(service NodeService) error {
@@ -81,6 +116,43 @@ func (s *HTTPServer) SetNodeService(service NodeService) error {
 		s.publishNodeEvent(created, "created")
 		writeJSON(response, http.StatusCreated, nodeToDTO(created))
 	})))
+	s.mux.Handle("POST /api/nodes/batch", s.RequireMutation(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		var input nodeBatchDTO
+		if err := decodeJSON(response, request, &input); err != nil {
+			writeAPIError(response, http.StatusBadRequest, "invalid node batch")
+			return
+		}
+		folder, err := node.NormalizeFolderName(input.Folder)
+		if err != nil || folder == "" || len(input.Nodes) == 0 || len(input.Nodes) > node.MaxBatchCreate {
+			writeAPIError(response, http.StatusBadRequest, "invalid node batch")
+			return
+		}
+		configs := make([]node.Config, 0, len(input.Nodes))
+		for index, item := range input.Nodes {
+			if item.Folder != "" || item.Username != "" || item.Password != "" {
+				writeAPIError(response, http.StatusBadRequest, "invalid node batch")
+				return
+			}
+			item.Folder = folder
+			decoded, err := decodeNodeDTO(item)
+			if err != nil || (index > 0 && !sameBatchSettings(configs[0], decoded.Config)) {
+				writeAPIError(response, http.StatusBadRequest, "invalid node batch")
+				return
+			}
+			configs = append(configs, decoded.Config)
+		}
+		created, err := service.CreateBatch(request.Context(), configs, input.ConfirmUnauthenticated)
+		if err != nil {
+			writeNodeError(response, err)
+			return
+		}
+		result := make([]nodeDTO, 0, len(created))
+		for _, current := range created {
+			s.publishNodeEvent(current, "created")
+			result = append(result, nodeToDTO(current))
+		}
+		writeJSON(response, http.StatusCreated, result)
+	})))
 	s.mux.Handle("GET /api/nodes/{id}", s.RequireSession(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		current, exists := service.Get(request.PathValue("id"))
 		if !exists {
@@ -114,6 +186,103 @@ func (s *HTTPServer) SetNodeService(service NodeService) error {
 		}
 		s.publishNodeEvent(updated, "updated")
 		writeJSON(response, http.StatusOK, result)
+	})))
+	s.mux.Handle("PUT /api/nodes/{id}/folder", s.RequireMutation(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		var input folderMoveDTO
+		if err := decodeJSON(response, request, &input); err != nil {
+			writeAPIError(response, http.StatusBadRequest, "invalid node folder")
+			return
+		}
+		folder, err := node.NormalizeFolderName(input.Folder)
+		if err != nil {
+			writeAPIError(response, http.StatusBadRequest, "invalid node folder")
+			return
+		}
+		moved, err := service.MoveToFolder(request.Context(), request.PathValue("id"), folder)
+		if err != nil {
+			writeNodeError(response, err)
+			return
+		}
+		s.publishNodeEvent(moved, "moved")
+		writeJSON(response, http.StatusOK, nodeToDTO(moved))
+	})))
+	s.mux.Handle("PUT /api/node-folders/rename", s.RequireMutation(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		var input folderRenameDTO
+		if err := decodeJSON(response, request, &input); err != nil {
+			writeAPIError(response, http.StatusBadRequest, "invalid node folder")
+			return
+		}
+		renamed, err := service.RenameFolder(request.Context(), input.Source, input.Target)
+		if err != nil {
+			writeNodeError(response, err)
+			return
+		}
+		result := make([]nodeDTO, 0, len(renamed))
+		for _, current := range renamed {
+			s.publishNodeEvent(current, "moved")
+			result = append(result, nodeToDTO(current))
+		}
+		writeJSON(response, http.StatusOK, result)
+	})))
+	s.mux.Handle("POST /api/node-folders/action", s.RequireMutation(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		var input folderActionDTO
+		if err := decodeJSON(response, request, &input); err != nil {
+			writeAPIError(response, http.StatusBadRequest, "invalid folder action")
+			return
+		}
+		folder, err := node.NormalizeFolderName(input.Folder)
+		if err != nil || folder == "" || (input.Action != "start" && input.Action != "stop" && input.Action != "delete") {
+			writeAPIError(response, http.StatusBadRequest, "invalid folder action")
+			return
+		}
+		if input.Action == "delete" && !input.Confirm {
+			writeAPIError(response, http.StatusUnprocessableEntity, "folder deletion confirmation required")
+			return
+		}
+		members := make([]node.Node, 0)
+		for _, current := range service.List() {
+			if current.Config.Folder == folder {
+				members = append(members, current)
+			}
+		}
+		sort.Slice(members, func(i, j int) bool { return members[i].Config.ID < members[j].Config.ID })
+		if len(members) == 0 {
+			writeAPIError(response, http.StatusNotFound, "node folder not found")
+			return
+		}
+		result := folderActionResponse{Succeeded: make([]string, 0), Failed: make([]folderActionFailure, 0)}
+		for _, current := range members {
+			var actionErr error
+			switch input.Action {
+			case "start":
+				var updated node.Node
+				updated, actionErr = service.Start(request.Context(), current.Config.ID)
+				if actionErr == nil {
+					s.publishNodeEvent(updated, "started")
+				}
+			case "stop":
+				var updated node.Node
+				updated, actionErr = service.Stop(request.Context(), current.Config.ID)
+				if actionErr == nil {
+					s.publishNodeEvent(updated, "stopped")
+				}
+			case "delete":
+				actionErr = service.Delete(request.Context(), current.Config.ID)
+				if actionErr == nil {
+					_ = s.events.Publish(Event{Type: "node.changed", Resource: "node", ID: current.Config.ID, Action: "deleted", State: "deleted", Time: time.Now()})
+				}
+			}
+			if actionErr != nil {
+				result.Failed = append(result.Failed, folderActionFailure{ID: current.Config.ID, Error: "node operation failed"})
+			} else {
+				result.Succeeded = append(result.Succeeded, current.Config.ID)
+			}
+		}
+		status := http.StatusOK
+		if len(result.Failed) != 0 {
+			status = http.StatusMultiStatus
+		}
+		writeJSON(response, status, result)
 	})))
 	s.mux.Handle("POST /api/nodes/{id}/start", s.RequireMutation(s.nodeActionHandler(service.Start, "started")))
 	s.mux.Handle("POST /api/nodes/{id}/stop", s.RequireMutation(s.nodeActionHandler(service.Stop, "stopped")))
@@ -159,6 +328,10 @@ func decodeNodeRequest(response http.ResponseWriter, request *http.Request) (dec
 	if err := decodeJSON(response, request, &input); err != nil {
 		return decodedNodeRequest{}, err
 	}
+	return decodeNodeDTO(input)
+}
+
+func decodeNodeDTO(input nodeDTO) (decodedNodeRequest, error) {
 	authentication := input.Authentication
 	if authentication == "" {
 		if input.Username != "" || input.Password != "" {
@@ -199,7 +372,7 @@ func decodeNodeRequest(response http.ResponseWriter, request *http.Request) (dec
 		return decodedNodeRequest{}, err
 	}
 	config := node.Config{
-		ID: input.ID, Name: input.Name, Protocol: input.Protocol,
+		ID: input.ID, Name: input.Name, Folder: input.Folder, Protocol: input.Protocol,
 		Username: input.Username, Password: input.Password,
 		MaxTCP: input.MaxTCP, MaxUDP: input.MaxUDP,
 		DialTimeout: dialTimeout, HandshakeTimeout: handshakeTimeout,
@@ -212,6 +385,17 @@ func decodeNodeRequest(response http.ResponseWriter, request *http.Request) (dec
 		return decodedNodeRequest{}, err
 	}
 	return decodedNodeRequest{Config: config, ConfirmUnauthenticated: input.ConfirmUnauthenticated}, nil
+}
+
+func sameBatchSettings(first, next node.Config) bool {
+	return first.Protocol == next.Protocol &&
+		(first.Username == "") == (next.Username == "") &&
+		first.MaxTCP == next.MaxTCP && first.MaxUDP == next.MaxUDP &&
+		first.DialTimeout == next.DialTimeout && first.HandshakeTimeout == next.HandshakeTimeout &&
+		first.TunnelIdleTimeout == next.TunnelIdleTimeout && first.UDPIdleTimeout == next.UDPIdleTimeout &&
+		first.ULAOverride == next.ULAOverride && first.Outbound == next.Outbound &&
+		first.DedicatedPool == next.DedicatedPool && first.InboundMode == next.InboundMode &&
+		first.InboundResource == next.InboundResource
 }
 
 func parseDurationField(name, value string) (time.Duration, error) {
@@ -227,7 +411,7 @@ func parseDurationField(name, value string) (time.Duration, error) {
 
 func nodeToDTO(current node.Node) nodeDTO {
 	return nodeDTO{
-		ID: current.Config.ID, Name: current.Config.Name, Protocol: current.Config.Protocol,
+		ID: current.Config.ID, Name: current.Config.Name, Folder: current.Config.Folder, Protocol: current.Config.Protocol,
 		Authentication: nodeAuthentication(current.Config),
 		Username:       current.Config.Username, Password: current.Config.Password,
 		MaxTCP: current.Config.MaxTCP, MaxUDP: current.Config.MaxUDP,
@@ -265,6 +449,12 @@ func writeNodeError(response http.ResponseWriter, err error) {
 		writeAPIError(response, http.StatusNotFound, "node not found")
 	case errors.Is(err, node.ErrNodeExists), errors.Is(err, node.ErrNodeLimit):
 		writeAPIError(response, http.StatusConflict, "node conflicts with existing state")
+	case errors.Is(err, node.ErrFolderExists):
+		writeAPIError(response, http.StatusConflict, "node folder conflicts with existing state")
+	case errors.Is(err, node.ErrFolderNotFound):
+		writeAPIError(response, http.StatusNotFound, "node folder not found")
+	case errors.Is(err, node.ErrBatchSize):
+		writeAPIError(response, http.StatusBadRequest, "invalid node batch")
 	case errors.Is(err, node.ErrUnauthenticatedRiskConfirmation):
 		writeAPIError(response, http.StatusUnprocessableEntity, "unauthenticated proxy risk confirmation required")
 	default:
