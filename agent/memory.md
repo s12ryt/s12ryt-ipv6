@@ -85,3 +85,10 @@
 - 修復公網HTTP管理面節點複製失敗：原元件直接呼叫可能不存在的 `navigator.clipboard.writeText`，在不安全context會同步拋出TypeError。先以純函式與元件測試形成RED，再新增Clipboard API→隱藏textarea/`execCommand`→手動可選取對話框的三級降級；成功後於節點操作旁顯示2秒「已複製」。
 - 節點新增獨立「複製連線資訊」與「複製連線帳密」。連線資訊依SOCKS5／HTTP／mixed輸出逐行標準URI，百分比編碼userinfo、IPv6加方括號；IPv4使用面板hostname，固定IPv6使用具名地址，入站池每次隨機一個active地址，雙棧輸出並去重。空池、錯誤類型、缺失／歧義資源與不完整帳密均在複製前拒絕。
 - 複製修復驗證：前端10 files／43 tests、ESLint、TypeScript與Vite production build通過，LSP無診斷。Playwright在實際HTTP頁停用Clipboard API，驗證相容備援成功、2秒回饋消失、全自動失敗時對話框自動全選正確mixed IPv6 URI；375／768／1440操作列與頁面無水平溢出，console為0 errors。
+- 完成一鍵批次建立節點與資料夾需求澄清並寫入 `agent/question.md` 第21節。批次使用共用設定與逐列預覽，預設5、上限100；後端為每個credentials節點獨立生成安全帳密，無認證批次只需整批確認一次公開代理風險。
+- 以TDD擴充節點模型與加密狀態：`folder`會trim、限制64個Unicode字元並拒絕控制字元；舊狀態缺欄位時載入為未分類。移動與改名只修改metadata，不重啟runtime；持久化失敗會回復原資料夾。
+- 批次建立採完整preflight、逐一啟動、單次state保存與反向rollback。無效設定、批內ID／名稱／手動埠衝突、既有資料夾衝突都在任何runtime啟動前拒絕；啟動或保存失敗時依反序停止已啟動節點。另以回歸測試拒絕批次API手填帳密，確保每筆credential只能由後端CSPRNG產生。
+- 管理API新增批次建立、節點移動、資料夾改名，以及保留成功並逐項固定去敏回報失敗的整批啟停／刪除操作。資料夾刪除明確不是跨節點原子交易，成功項不因其他節點失敗而回復。
+- React節點頁新增「一鍵建立多節點」、共用設定、ID／名稱／埠預覽、資料夾排序／收合與批量複製／啟停／刪除。收合狀態只保存在 `s12ryt_node_folders_collapsed`；未分類始終最後且不提供伺服器資料夾操作。基礎模式隱藏進階限制，模式切換不清除批次表單或預覽。
+- 品質審查以Playwright發現未分類名稱空字串會誤觸資料夾刪除確認，先新增RED測試，再要求非空folder才能顯示確認。最終前端11 files／53 tests、ESLint與Vite build通過；Go全套測試、vet、Linux amd64／arm64 build與network/firewall integration test binary交叉編譯均通過。
+- Playwright使用去敏API mock實際驗證批次建立、資料夾收合／移動／改名、部分失敗的整批停止與未分類安全行為；375／768／1024／1440在基礎／進階模式下皆無document、main、批次預覽或資料夾標題水平溢出，console為0 errors。Windows仍未執行真實Linux root/netns網路整合測試。
