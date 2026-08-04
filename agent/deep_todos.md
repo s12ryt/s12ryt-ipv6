@@ -35,3 +35,11 @@
 - [x] 補齊完整README詞彙表與功能／頁面操作對照。
 - [x] 執行前端完整測試、lint、build及Playwright響應式驗收。
 - [x] 更新治理紀錄並完成品質審查。
+
+## 2026-08-04：網路自動偵測與候選選單
+
+- [x] 以 TDD 實作 Linux UP 非 loopback 介面、IPv6 地址與路由候選偵測。
+- [x] 以 TDD 實作前綴衝突標記及登入保護的管理 API。
+- [x] 實作資源／節點自動命名、介面與 CIDR 候選選單及自訂備援。
+- [x] 實作 NAT64 自動／自訂模式與 Cloudflare／Google Resolver 預設選單。
+- [x] 完成完整回歸、Linux 雙架構 build、Playwright 驗收與治理紀錄。
