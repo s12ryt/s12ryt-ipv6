@@ -1,7 +1,9 @@
-import { FormEvent, ReactNode, useState } from 'react'
-import { Copy, Eye, EyeOff, Pencil, Play, Plus, RotateCcw, Square, Trash2, X } from 'lucide-react'
+import { FormEvent, ReactNode, useEffect, useRef, useState } from 'react'
+import { Copy, Eye, EyeOff, Link2, Pencil, Play, Plus, RotateCcw, Square, Trash2, X } from 'lucide-react'
 import { APIError, ApiClient, InboundMode, NodeMutation, NodeProtocol, NodeRecord, ResourceSnapshot, ULAOverride } from './api'
 import { nextNodeIdentity } from './automaticNames'
+import { copyText } from './clipboard'
+import { buildNodeConnectionInfo } from './nodeConnection'
 import type { PanelMode } from './panelMode'
 
 type NodeClient = Pick<ApiClient, 'mutate'>
@@ -35,6 +37,16 @@ interface NodeFormState {
   confirmUnauthenticated: boolean
 }
 
+interface ManualCopyState {
+  title: string
+  value: string
+}
+
+interface CopyFeedback {
+  nodeID: string
+  kind: 'connection' | 'credentials'
+}
+
 const emptyForm: NodeFormState = {
   id: '', name: '', protocol: 'mixed', authentication: 'credentials', username: '', password: '',
   outbound: '', port: '0', inboundMode: 'ipv6', inboundResource: '',
@@ -49,6 +61,20 @@ export function NodesView({ mode, client, nodes, resources, onChange }: NodesVie
   const [deleteID, setDeleteID] = useState('')
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
+  const [manualCopy, setManualCopy] = useState<ManualCopyState | null>(null)
+  const [copyFeedback, setCopyFeedback] = useState<CopyFeedback | null>(null)
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const manualCopyInput = useRef<HTMLTextAreaElement | null>(null)
+
+  useEffect(() => () => {
+    if (copyTimer.current) clearTimeout(copyTimer.current)
+  }, [])
+
+  useEffect(() => {
+    if (!manualCopy || !manualCopyInput.current) return
+    manualCopyInput.current.focus()
+    manualCopyInput.current.select()
+  }, [manualCopy])
 
   const replaceNode = (value: NodeRecord) => {
     const next = nodes.some((item) => item.id === value.id)
@@ -97,6 +123,35 @@ export function NodesView({ mode, client, nodes, resources, onChange }: NodesVie
       setError(messageFor(reason, '帳密重設失敗'))
     } finally {
       setBusy('')
+    }
+  }
+
+  const copyNodeValue = async (node: NodeRecord, kind: CopyFeedback['kind']) => {
+    setError('')
+    let value: string
+    try {
+      value = kind === 'connection'
+        ? buildNodeConnectionInfo(node, resources, window.location.hostname)
+        : credentialText(node)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '無法產生可複製的節點資訊')
+      return
+    }
+
+    try {
+      await copyText(value)
+      setManualCopy(null)
+      setCopyFeedback({ nodeID: node.id, kind })
+      if (copyTimer.current) clearTimeout(copyTimer.current)
+      copyTimer.current = setTimeout(() => setCopyFeedback((current) => (
+        current?.nodeID === node.id && current.kind === kind ? null : current
+      )), 2000)
+    } catch {
+      setCopyFeedback(null)
+      setManualCopy({
+        title: kind === 'connection' ? '手動複製連線資訊' : '手動複製連線帳密',
+        value,
+      })
     }
   }
 
@@ -161,10 +216,12 @@ export function NodesView({ mode, client, nodes, resources, onChange }: NodesVie
                   <IconButton label={`啟動 ${node.id}`} icon={Play} disabled={busy !== ''} onClick={() => void action(node, 'start')} />
                 )}
                 <IconButton label={`編輯 ${node.id}`} icon={Pencil} disabled={busy !== ''} onClick={() => beginEdit(node)} />
+                <IconButton label={`複製 ${node.id} 連線資訊`} icon={Link2} onClick={() => void copyNodeValue(node, 'connection')} />
                 {authenticated && <IconButton label={`${visible ? '隱藏' : '顯示'} ${node.id} 帳密`} icon={visible ? EyeOff : Eye} onClick={() => setVisibleSecrets(toggleSet(visibleSecrets, node.id))} />}
-                {authenticated && <IconButton label={`複製 ${node.id} 連線帳密`} icon={Copy} onClick={() => void navigator.clipboard.writeText(`${node.username}:${node.password}`).catch(() => setError('無法存取剪貼簿'))} />}
+                {authenticated && <IconButton label={`複製 ${node.id} 連線帳密`} icon={Copy} onClick={() => void copyNodeValue(node, 'credentials')} />}
                 {authenticated && <IconButton label={`重設 ${node.id} 帳密`} icon={RotateCcw} disabled={busy !== ''} onClick={() => void resetCredentials(node)} />}
                 <IconButton label={`刪除 ${node.id}`} icon={Trash2} tone="danger" disabled={busy !== ''} onClick={() => setDeleteID(node.id)} />
+                {copyFeedback?.nodeID === node.id && <span className="copy-feedback" role="status">已複製</span>}
               </div>
               {visible && authenticated && <div className="secret-row"><span className="mono">{node.username}</span><span className="mono">{node.password}</span></div>}
               {deleteID === node.id && (
@@ -174,6 +231,25 @@ export function NodesView({ mode, client, nodes, resources, onChange }: NodesVie
           )
         })}
       </div>
+      {manualCopy && (
+        <div className="copy-dialog-backdrop">
+          <section className="copy-dialog" role="dialog" aria-modal="true" aria-labelledby="manual-copy-title">
+            <div className="section-heading">
+              <h2 id="manual-copy-title">{manualCopy.title}</h2>
+              <IconButton label="關閉手動複製" icon={X} onClick={() => setManualCopy(null)} />
+            </div>
+            <p>瀏覽器禁止自動存取剪貼簿，請手動複製以下內容。</p>
+            <label className="field">
+              <span>手動複製內容</span>
+              <textarea ref={manualCopyInput} value={manualCopy.value} readOnly rows={Math.min(8, manualCopy.value.split('\n').length + 1)} onFocus={(event) => event.currentTarget.select()} />
+            </label>
+            <div className="form-actions">
+              <button className="secondary-button" type="button" onClick={() => { manualCopyInput.current?.focus(); manualCopyInput.current?.select() }}>選取全部</button>
+              <button className="primary-button" type="button" onClick={() => setManualCopy(null)}>完成</button>
+            </div>
+          </section>
+        </div>
+      )}
     </section>
   )
 }
@@ -270,6 +346,11 @@ function mutationFromNode(node: NodeRecord): NodeMutation {
     authentication: node.authentication ?? (node.username ? 'credentials' : 'none'),
     confirm_unauthenticated: false,
   }
+}
+
+function credentialText(node: NodeRecord): string {
+  if (!node.username || !node.password) throw new Error('節點帳密尚未完整產生')
+  return `${node.username}:${node.password}`
 }
 
 function messageFor(reason: unknown, fallback: string) {

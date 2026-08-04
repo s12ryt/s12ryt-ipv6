@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient, NodeRecord, ResourceSnapshot } from './api'
@@ -30,12 +30,15 @@ const resources: ResourceSnapshot = {
   fixed: [{ name: 'fixed-main', template: 'wan', address: '2001:4860::10', ownership: 'address' }],
   addresses: [],
   pools: [
-    { name: 'inbound-main', kind: 'inbound', template: 'wan', capacity: 10, pinned: [], active: [], draining: [] },
+    { name: 'inbound-main', kind: 'inbound', template: 'wan', capacity: 10, pinned: [], active: ['2001:4860::20', '2001:4860::21'], draining: [] },
     { name: 'shared-main', kind: 'shared-outbound', template: 'wan', capacity: 100, pinned: [], active: [], draining: [] },
   ],
 }
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
 
 describe('NodesView', () => {
   it('reveals and copies credentials and changes the running state', async () => {
@@ -57,6 +60,50 @@ describe('NodesView', () => {
     await user.click(screen.getByRole('button', { name: '停止 edge-1' }))
     await waitFor(() => expect(mutate).toHaveBeenCalledWith('/api/nodes/edge-1/stop', 'POST', {}))
     expect(onChange).toHaveBeenCalledWith([stopped])
+  })
+
+  it('copies standard connection URIs and reports success beside the node actions', async () => {
+    const user = userEvent.setup()
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+
+    render(<NodesView mode="advanced" client={{ mutate: vi.fn() } as Pick<ApiClient, 'mutate'>} nodes={[runningNode]} resources={resources} onChange={vi.fn()} />)
+
+    await user.click(screen.getByRole('button', { name: '複製 edge-1 連線資訊' }))
+    expect(writeText).toHaveBeenCalledWith([
+      'socks5://proxy-user:proxy-password-value@[2001:4860::20]:52000',
+      'http://proxy-user:proxy-password-value@[2001:4860::20]:52000',
+    ].join('\n'))
+    expect(screen.getByRole('status')).toHaveTextContent('已複製')
+  })
+
+  it('falls back on public HTTP and presents a manual copy dialog when every mechanism fails', async () => {
+    const user = userEvent.setup()
+    const execCommand = vi.fn().mockReturnValue(true)
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand })
+
+    const view = render(<NodesView mode="advanced" client={{ mutate: vi.fn() } as Pick<ApiClient, 'mutate'>} nodes={[runningNode]} resources={resources} onChange={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: '複製 edge-1 連線帳密' }))
+    expect(execCommand).toHaveBeenCalledWith('copy')
+    expect(screen.getByRole('status')).toHaveTextContent('已複製')
+
+    view.unmount()
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) } })
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: vi.fn().mockReturnValue(false) })
+    render(<NodesView mode="advanced" client={{ mutate: vi.fn() } as Pick<ApiClient, 'mutate'>} nodes={[runningNode]} resources={resources} onChange={vi.fn()} />)
+
+    await user.click(screen.getByRole('button', { name: '複製 edge-1 連線資訊' }))
+    const dialog = screen.getByRole('dialog', { name: '手動複製連線資訊' })
+    expect(within(dialog).getByText('瀏覽器禁止自動存取剪貼簿，請手動複製以下內容。')).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('手動複製內容')).toHaveValue([
+      'socks5://proxy-user:proxy-password-value@[2001:4860::20]:52000',
+      'http://proxy-user:proxy-password-value@[2001:4860::20]:52000',
+    ].join('\n'))
+    await user.click(within(dialog).getByRole('button', { name: '關閉手動複製' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   it('creates a credential-protected node with secure defaults', async () => {

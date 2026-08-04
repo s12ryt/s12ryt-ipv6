@@ -160,9 +160,10 @@ form > button:hover, .icon-text-button:hover { background: var(--primary-hover);
 .resource-table-head { color: var(--muted); font-size: 0.72rem; font-weight: 750; text-transform: uppercase; }
 .resource-table-row > div:not(.row-actions):not(.secret-row):not(.confirm-row) { display: grid; min-width: 0; gap: 3px; overflow-wrap: anywhere; font-size: 0.82rem; }
 .resource-table-row > div > span + span { color: var(--muted); font-size: 0.74rem; }
-.row-actions { display: flex; justify-content: flex-end; gap: 4px; }
+.row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
 .icon-button { display: grid; width: 32px; height: 32px; flex: 0 0 32px; place-items: center; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--muted); }
 .icon-button:hover { border-color: var(--border); background: var(--surface-muted); color: var(--text); }
+.copy-feedback { align-self: center; color: var(--success); padding: 0 5px; font-size: 0.74rem; font-weight: 700; white-space: nowrap; }
 .secret-row, .confirm-row { grid-column: 1 / -1; }
 .secret-row { display: flex; flex-wrap: wrap; gap: 10px 24px; border-left: 3px solid var(--primary); background: var(--surface-muted); padding: 9px 12px; font-size: 0.8rem; overflow-wrap: anywhere; }
 .confirm-row { display: flex; align-items: center; justify-content: flex-end; gap: 8px; color: var(--danger); font-size: 0.8rem; }
@@ -218,6 +219,11 @@ form > button:hover, .icon-text-button:hover { background: var(--primary-hover);
 .event-main span, .event-route span { color: var(--muted); font-size: 0.72rem; }
 .event-route strong { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; font-size: 0.75rem; }
 .event-error { grid-column: 3 / -1; color: var(--danger); overflow-wrap: anywhere; }
+.copy-dialog-backdrop { position: fixed; z-index: 40; inset: 0; display: grid; place-items: center; background: rgb(10 16 22 / 58%); padding: 18px; }
+.copy-dialog { display: grid; width: min(640px, 100%); max-height: calc(100dvh - 36px); overflow-y: auto; gap: 16px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); box-shadow: 0 18px 50px rgb(0 0 0 / 28%); padding: 18px; }
+.copy-dialog .section-heading { margin: 0; }
+.copy-dialog p { margin: 0; color: var(--muted); font-size: 0.84rem; }
+.copy-dialog textarea { min-height: 110px; resize: vertical; font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; font-size: 0.78rem; line-height: 1.55; }
 
 @media (max-width: 1024px) {
   .app-shell { grid-template: auto 56px auto 1fr / minmax(0, 1fr); }
