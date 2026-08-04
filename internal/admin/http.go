@@ -57,6 +57,7 @@ type HTTPServer struct {
 	nodesSet      bool
 	resourcesSet  bool
 	operationsSet bool
+	discoverySet  bool
 	frontendSet   bool
 }
 
