@@ -68,6 +68,7 @@ export interface BindSpec {
 export interface NodeRecord {
   id: string
   name: string
+  folder?: string
   protocol: NodeProtocol
   authentication?: 'credentials' | 'none'
   username?: string
