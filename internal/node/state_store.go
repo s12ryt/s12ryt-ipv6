@@ -40,6 +40,7 @@ type nodeStateDocument struct {
 type nodeStateRecord struct {
 	ID                string             `yaml:"id"`
 	Name              string             `yaml:"name"`
+	Folder            string             `yaml:"folder,omitempty"`
 	Protocol          string             `yaml:"protocol"`
 	Status            string             `yaml:"status"`
 	UsernameEncrypted string             `yaml:"username_encrypted,omitempty"`
@@ -228,7 +229,7 @@ func (s *FileStateStore) decode(document nodeStateDocument) (State, error) {
 func recordFromNode(current Node) nodeStateRecord {
 	config := current.Config
 	record := nodeStateRecord{
-		ID: config.ID, Name: config.Name, Protocol: string(config.Protocol), Status: string(current.Status),
+		ID: config.ID, Name: config.Name, Folder: config.Folder, Protocol: string(config.Protocol), Status: string(current.Status),
 		MaxTCP: config.MaxTCP, MaxUDP: config.MaxUDP, DialTimeout: config.DialTimeout.String(),
 		HandshakeTimeout: config.HandshakeTimeout.String(), TunnelIdleTimeout: config.TunnelIdleTimeout.String(),
 		UDPIdleTimeout: config.UDPIdleTimeout.String(), ULAOverride: string(config.ULAOverride), Outbound: config.Outbound,
@@ -287,7 +288,7 @@ func (r nodeStateRecord) toNode(username, password string) (Node, error) {
 		})
 	}
 	return Node{Config: Config{
-		ID: r.ID, Name: r.Name, Protocol: Protocol(r.Protocol), Username: username, Password: password,
+		ID: r.ID, Name: r.Name, Folder: r.Folder, Protocol: Protocol(r.Protocol), Username: username, Password: password,
 		MaxTCP: r.MaxTCP, MaxUDP: r.MaxUDP, DialTimeout: dial, HandshakeTimeout: handshake,
 		TunnelIdleTimeout: tunnelIdle, UDPIdleTimeout: udpIdle, ULAOverride: policy.ULAOverride(r.ULAOverride),
 		Outbound: r.Outbound, DedicatedPool: r.DedicatedPool, Port: r.Port,
@@ -307,6 +308,11 @@ func normalizeState(state State) (State, error) {
 	normalized := State{Nodes: make([]Node, len(state.Nodes))}
 	seen := make(map[string]struct{}, len(state.Nodes))
 	for index, current := range state.Nodes {
+		folder, err := NormalizeFolderName(current.Config.Folder)
+		if err != nil {
+			return State{}, fmt.Errorf("node %q folder: %w", current.Config.ID, err)
+		}
+		current.Config.Folder = folder
 		if current.Status != StatusRunning && current.Status != StatusStopped {
 			return State{}, fmt.Errorf("node %q has invalid status %q", current.Config.ID, current.Status)
 		}

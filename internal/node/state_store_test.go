@@ -25,6 +25,7 @@ func TestFileStateStoreEncryptsCredentialsAndRoundTripsNodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	running := Node{Config: validConfig("node-2", "running"), Status: StatusRunning}
+	running.Config.Folder = "批次 1"
 	running.Config.Inbound = []proxy.BindSpec{{Protocol: proxy.BindTCP, Family: proxy.BindIPv6, Interface: "eth0", Freebind: false}}
 	stopped := Node{Config: validConfig("node-1", "stopped"), Status: StatusStopped}
 	stopped.Config.Username = ""
@@ -209,5 +210,38 @@ func TestFileStateStorePersistsDeclarativeInboundWithoutResolvedBindings(t *test
 	}
 	if len(loaded.Nodes) != 1 || !reflect.DeepEqual(loaded.Nodes[0].Config, want) {
 		t.Fatalf("loaded config = %#v, want %#v", loaded.Nodes[0].Config, want)
+	}
+}
+
+func TestFileStateStoreLoadsNodesWithoutFolderAsUnclassified(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nodes.yaml")
+	vault, err := secret.NewVault(
+		bytes.Repeat([]byte{8}, secret.MasterKeySize),
+		bytes.NewReader(bytes.Repeat([]byte{9}, 4096)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewFileStateStore(path, vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := validConfig("node-1", "legacy")
+	if err := store.Save(State{Nodes: []Node{{Config: config, Status: StatusStopped}}}); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(contents), "folder:") {
+		t.Fatalf("empty folder was persisted: %s", contents)
+	}
+	loaded, exists, err := store.Load()
+	if err != nil || !exists {
+		t.Fatalf("Load() = %#v, %v, %v", loaded, exists, err)
+	}
+	if len(loaded.Nodes) != 1 || loaded.Nodes[0].Config.Folder != "" {
+		t.Fatalf("loaded legacy folder = %#v", loaded.Nodes)
 	}
 }
