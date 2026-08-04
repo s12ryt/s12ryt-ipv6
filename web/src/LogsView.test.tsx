@@ -25,7 +25,7 @@ describe('LogsView', () => {
   it('loads metadata-only logs and applies encoded filters', async () => {
     const user = userEvent.setup()
     const get = vi.fn().mockResolvedValue(events)
-    render(<LogsView client={{ get, mutate: vi.fn() } as Pick<ApiClient, 'get' | 'mutate'>} statistics={statistics} onStatisticsChange={vi.fn()} />)
+    render(<LogsView mode="advanced" client={{ get, mutate: vi.fn() } as Pick<ApiClient, 'get' | 'mutate'>} statistics={statistics} onStatisticsChange={vi.fn()} />)
 
     await waitFor(() => expect(get).toHaveBeenCalledWith('/api/logs?limit=200'))
     expect(await screen.findByText('example.com:443')).toBeInTheDocument()
@@ -47,7 +47,7 @@ describe('LogsView', () => {
     const user = userEvent.setup()
     const get = vi.fn().mockResolvedValueOnce(events).mockResolvedValueOnce([events[1]])
     const mutate = vi.fn().mockResolvedValue(undefined)
-    render(<LogsView client={{ get, mutate } as Pick<ApiClient, 'get' | 'mutate'>} statistics={statistics} onStatisticsChange={vi.fn()} />)
+    render(<LogsView mode="advanced" client={{ get, mutate } as Pick<ApiClient, 'get' | 'mutate'>} statistics={statistics} onStatisticsChange={vi.fn()} />)
     await screen.findByText('example.com:443')
 
     await user.click(screen.getByRole('button', { name: '清除全部日誌' }))
@@ -69,7 +69,7 @@ describe('LogsView', () => {
     const get = vi.fn().mockResolvedValueOnce([]).mockResolvedValue(refreshed)
     const mutate = vi.fn().mockResolvedValue(undefined)
     const onStatisticsChange = vi.fn()
-    render(<LogsView client={{ get, mutate } as Pick<ApiClient, 'get' | 'mutate'>} statistics={statistics} onStatisticsChange={onStatisticsChange} />)
+    render(<LogsView mode="advanced" client={{ get, mutate } as Pick<ApiClient, 'get' | 'mutate'>} statistics={statistics} onStatisticsChange={onStatisticsChange} />)
     await waitFor(() => expect(get).toHaveBeenCalledWith('/api/logs?limit=200'))
 
     const row = screen.getByRole('row', { name: /edge-1/ })
@@ -85,5 +85,20 @@ describe('LogsView', () => {
     await user.click(screen.getByRole('button', { name: '歸零全部統計' }))
     await user.click(screen.getByRole('button', { name: '確認歸零全部統計' }))
     await waitFor(() => expect(mutate).toHaveBeenCalledWith('/api/stats/reset', 'POST', { node: '', confirm: true }))
+  })
+
+  it('retains all log filters but hides destructive maintenance in basic mode', async () => {
+    const get = vi.fn().mockResolvedValue(events)
+    render(<LogsView mode="basic" client={{ get, mutate: vi.fn() } as Pick<ApiClient, 'get' | 'mutate'>} statistics={statistics} onStatisticsChange={vi.fn()} />)
+
+    await screen.findByText('example.com:443')
+    for (const label of ['事件類型', '節點篩選', '動作篩選', '結果', '筆數']) {
+      expect(screen.getByLabelText(label)).toBeInTheDocument()
+    }
+    expect(screen.getByRole('button', { name: '套用篩選' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '清除全部日誌' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '歸零 edge-1 統計' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '歸零全部統計' })).not.toBeInTheDocument()
+    expect(screen.queryByText('操作')).not.toBeInTheDocument()
   })
 })

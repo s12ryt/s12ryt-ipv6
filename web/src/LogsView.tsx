@@ -1,11 +1,13 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react'
 import { Filter, RefreshCw, RotateCcw, Trash2, X } from 'lucide-react'
 import { APIError, ApiClient, LogEvent, LogKind, StatisticsSnapshot } from './api'
+import type { PanelMode } from './panelMode'
 
 type LogsClient = Pick<ApiClient, 'get' | 'mutate'>
 type ConfirmAction = { kind: 'logs' } | { kind: 'stats'; node: string } | null
 
-export function LogsView({ client, statistics, onStatisticsChange }: {
+export function LogsView({ mode, client, statistics, onStatisticsChange }: {
+  mode: PanelMode
   client: LogsClient
   statistics: StatisticsSnapshot
   onStatisticsChange: (statistics: StatisticsSnapshot) => void
@@ -78,16 +80,16 @@ export function LogsView({ client, statistics, onStatisticsChange }: {
       {error && <div className="inline-error page-message" role="alert">{error}</div>}
 
       <section className="data-section" aria-labelledby="statistics-title">
-        <div className="section-heading"><h2 id="statistics-title">節點統計</h2><button className="secondary-button" type="button" onClick={() => setConfirm({ kind: 'stats', node: '' })}><RotateCcw size={16} aria-hidden="true" />歸零全部統計</button></div>
-        {confirm?.kind === 'stats' && confirm.node === '' && <Confirmation text="將清除所有節點的累計連線、流量與錯誤；活躍連線數保持不變。" confirmLabel="確認歸零全部統計" busy={busy !== ''} onCancel={() => setConfirm(null)} onConfirm={() => void resetStatistics('')} />}
-        <div className="stats-table" role="table" aria-label="節點統計">
-          <div className="stats-head" role="row"><span>節點</span><span>活躍</span><span>累計</span><span>上行</span><span>下行</span><span>錯誤</span><span>操作</span></div>
+        <div className="section-heading"><h2 id="statistics-title">節點統計</h2>{mode === 'advanced' && <button className="secondary-button" type="button" onClick={() => setConfirm({ kind: 'stats', node: '' })}><RotateCcw size={16} aria-hidden="true" />歸零全部統計</button>}</div>
+        {mode === 'advanced' && confirm?.kind === 'stats' && confirm.node === '' && <Confirmation text="將清除所有節點的累計連線、流量與錯誤；活躍連線數保持不變。" confirmLabel="確認歸零全部統計" busy={busy !== ''} onCancel={() => setConfirm(null)} onConfirm={() => void resetStatistics('')} />}
+        <div className={`stats-table${mode === 'basic' ? ' basic' : ''}`} role="table" aria-label="節點統計">
+          <div className="stats-head" role="row"><span>節點</span><span>活躍</span><span>累計</span><span>上行</span><span>下行</span><span>錯誤</span>{mode === 'advanced' && <span>操作</span>}</div>
           {Object.entries(statistics.nodes).sort(([left], [right]) => left.localeCompare(right)).map(([name, counters]) => (
             <div className="stats-row" role="row" aria-label={`${name} 統計`} key={name}>
               <strong>{name}</strong><span>{counters.active_tcp + counters.active_udp}</span><span>{counters.total_connections.toLocaleString('zh-TW')}</span><span>{formatBytes(counters.bytes_up)}</span><span>{formatBytes(counters.bytes_down)}</span><span className={counters.errors ? 'danger-text' : ''}>{counters.errors.toLocaleString('zh-TW')}</span>
-              <div>{confirm?.kind === 'stats' && confirm.node === name
+              {mode === 'advanced' && <div>{confirm?.kind === 'stats' && confirm.node === name
                 ? <div className="compact-confirm"><button className="danger-button" type="button" disabled={busy !== ''} onClick={() => void resetStatistics(name)}>確認歸零 {name} 統計</button><button className="icon-button" type="button" title={`取消歸零 ${name}`} aria-label={`取消歸零 ${name}`} onClick={() => setConfirm(null)}><X size={16} aria-hidden="true" /></button></div>
-                : <button className="icon-button" type="button" title={`歸零 ${name} 統計`} aria-label={`歸零 ${name} 統計`} onClick={() => setConfirm({ kind: 'stats', node: name })}><RotateCcw size={16} aria-hidden="true" /></button>}</div>
+                : <button className="icon-button" type="button" title={`歸零 ${name} 統計`} aria-label={`歸零 ${name} 統計`} onClick={() => setConfirm({ kind: 'stats', node: name })}><RotateCcw size={16} aria-hidden="true" /></button>}</div>}
             </div>
           ))}
           {Object.keys(statistics.nodes).length === 0 && <p className="empty-state">目前沒有節點統計</p>}
@@ -95,8 +97,8 @@ export function LogsView({ client, statistics, onStatisticsChange }: {
       </section>
 
       <section className="resource-section" aria-labelledby="events-title">
-        <div className="section-heading"><h2 id="events-title">事件</h2><button className="danger-button" type="button" onClick={() => setConfirm({ kind: 'logs' })}><Trash2 size={16} aria-hidden="true" />清除全部日誌</button></div>
-        {confirm?.kind === 'logs' && <Confirmation text="將刪除目前日誌與所有輪替檔，操作本身會成為新日誌的第一筆稽核事件。" confirmLabel="確認清除全部日誌" busy={busy !== ''} onCancel={() => setConfirm(null)} onConfirm={() => void clearLogs()} />}
+        <div className="section-heading"><h2 id="events-title">事件</h2>{mode === 'advanced' && <button className="danger-button" type="button" onClick={() => setConfirm({ kind: 'logs' })}><Trash2 size={16} aria-hidden="true" />清除全部日誌</button>}</div>
+        {mode === 'advanced' && confirm?.kind === 'logs' && <Confirmation text="將刪除目前日誌與所有輪替檔，操作本身會成為新日誌的第一筆稽核事件。" confirmLabel="確認清除全部日誌" busy={busy !== ''} onCancel={() => setConfirm(null)} onConfirm={() => void clearLogs()} />}
         <form className="log-filters" aria-label="日誌篩選" onSubmit={submitFilters}>
           <label className="field"><span>事件類型</span><select value={kind} onChange={(event) => setKind(event.target.value as LogKind | '')}><option value="">全部</option><option value="proxy">代理</option><option value="system">系統</option><option value="audit">稽核</option></select></label>
           <label className="field"><span>節點篩選</span><input value={node} maxLength={128} onChange={(event) => setNode(event.target.value)} /></label>
