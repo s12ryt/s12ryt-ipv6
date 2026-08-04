@@ -52,8 +52,9 @@ describe('LogsView', () => {
 
     await user.click(screen.getByRole('button', { name: '清除全部日誌' }))
     expect(mutate).not.toHaveBeenCalled()
-    expect(screen.getByRole('alert')).toHaveTextContent('所有輪替檔')
-    await user.click(screen.getByRole('button', { name: '確認清除全部日誌' }))
+    const clearDialog = screen.getByRole('dialog', { name: '清除全部日誌' })
+    expect(clearDialog).toHaveTextContent('所有輪替檔')
+    await user.click(within(clearDialog).getByRole('button', { name: '確認清除全部日誌' }))
 
     await waitFor(() => expect(mutate).toHaveBeenCalledWith('/api/logs/clear', 'POST', { confirm: true }))
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2))
@@ -76,14 +77,16 @@ describe('LogsView', () => {
     expect(within(row).getByText('3')).toBeInTheDocument()
     await user.click(within(row).getByRole('button', { name: '歸零 edge-1 統計' }))
     expect(mutate).not.toHaveBeenCalled()
-    await user.click(within(row).getByRole('button', { name: '確認歸零 edge-1 統計' }))
+    const nodeDialog = screen.getByRole('dialog', { name: '歸零 edge-1 統計' })
+    await user.click(within(nodeDialog).getByRole('button', { name: '確認歸零' }))
 
     await waitFor(() => expect(mutate).toHaveBeenCalledWith('/api/stats/reset', 'POST', { node: 'edge-1', confirm: true }))
     await waitFor(() => expect(get).toHaveBeenCalledWith('/api/stats'))
     expect(onStatisticsChange).toHaveBeenCalledWith(refreshed)
 
     await user.click(screen.getByRole('button', { name: '歸零全部統計' }))
-    await user.click(screen.getByRole('button', { name: '確認歸零全部統計' }))
+    const allDialog = screen.getByRole('dialog', { name: '歸零全部統計' })
+    await user.click(within(allDialog).getByRole('button', { name: '確認歸零' }))
     await waitFor(() => expect(mutate).toHaveBeenCalledWith('/api/stats/reset', 'POST', { node: '', confirm: true }))
   })
 

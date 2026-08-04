@@ -1,7 +1,8 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react'
-import { Filter, RefreshCw, RotateCcw, Trash2, X } from 'lucide-react'
+import { Filter, RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
 import { APIError, ApiClient, LogEvent, LogKind, StatisticsSnapshot } from './api'
 import type { PanelMode } from './panelMode'
+import { ModalDialog } from './ModalDialog'
 
 type LogsClient = Pick<ApiClient, 'get' | 'mutate'>
 type ConfirmAction = { kind: 'logs' } | { kind: 'stats'; node: string } | null
@@ -81,15 +82,12 @@ export function LogsView({ mode, client, statistics, onStatisticsChange }: {
 
       <section className="data-section" aria-labelledby="statistics-title">
         <div className="section-heading"><h2 id="statistics-title">節點統計</h2>{mode === 'advanced' && <button className="secondary-button" type="button" onClick={() => setConfirm({ kind: 'stats', node: '' })}><RotateCcw size={16} aria-hidden="true" />歸零全部統計</button>}</div>
-        {mode === 'advanced' && confirm?.kind === 'stats' && confirm.node === '' && <Confirmation text="將清除所有節點的累計連線、流量與錯誤；活躍連線數保持不變。" confirmLabel="確認歸零全部統計" busy={busy !== ''} onCancel={() => setConfirm(null)} onConfirm={() => void resetStatistics('')} />}
         <div className={`stats-table${mode === 'basic' ? ' basic' : ''}`} role="table" aria-label="節點統計">
           <div className="stats-head" role="row"><span>節點</span><span>活躍</span><span>累計</span><span>上行</span><span>下行</span><span>錯誤</span>{mode === 'advanced' && <span>操作</span>}</div>
           {Object.entries(statistics.nodes).sort(([left], [right]) => left.localeCompare(right)).map(([name, counters]) => (
             <div className="stats-row" role="row" aria-label={`${name} 統計`} key={name}>
               <strong>{name}</strong><span>{counters.active_tcp + counters.active_udp}</span><span>{counters.total_connections.toLocaleString('zh-TW')}</span><span>{formatBytes(counters.bytes_up)}</span><span>{formatBytes(counters.bytes_down)}</span><span className={counters.errors ? 'danger-text' : ''}>{counters.errors.toLocaleString('zh-TW')}</span>
-              {mode === 'advanced' && <div>{confirm?.kind === 'stats' && confirm.node === name
-                ? <div className="compact-confirm"><button className="danger-button" type="button" disabled={busy !== ''} onClick={() => void resetStatistics(name)}>確認歸零 {name} 統計</button><button className="icon-button" type="button" title={`取消歸零 ${name}`} aria-label={`取消歸零 ${name}`} onClick={() => setConfirm(null)}><X size={16} aria-hidden="true" /></button></div>
-                : <button className="icon-button" type="button" title={`歸零 ${name} 統計`} aria-label={`歸零 ${name} 統計`} onClick={() => setConfirm({ kind: 'stats', node: name })}><RotateCcw size={16} aria-hidden="true" /></button>}</div>}
+              {mode === 'advanced' && <div><button className="icon-button" type="button" title={`歸零 ${name} 統計`} aria-label={`歸零 ${name} 統計`} onClick={() => setConfirm({ kind: 'stats', node: name })}><RotateCcw size={16} aria-hidden="true" /></button></div>}
             </div>
           ))}
           {Object.keys(statistics.nodes).length === 0 && <p className="empty-state">目前沒有節點統計</p>}
@@ -98,7 +96,6 @@ export function LogsView({ mode, client, statistics, onStatisticsChange }: {
 
       <section className="resource-section" aria-labelledby="events-title">
         <div className="section-heading"><h2 id="events-title">事件</h2>{mode === 'advanced' && <button className="danger-button" type="button" onClick={() => setConfirm({ kind: 'logs' })}><Trash2 size={16} aria-hidden="true" />清除全部日誌</button>}</div>
-        {mode === 'advanced' && confirm?.kind === 'logs' && <Confirmation text="將刪除目前日誌與所有輪替檔，操作本身會成為新日誌的第一筆稽核事件。" confirmLabel="確認清除全部日誌" busy={busy !== ''} onCancel={() => setConfirm(null)} onConfirm={() => void clearLogs()} />}
         <form className="log-filters" aria-label="日誌篩選" onSubmit={submitFilters}>
           <label className="field"><span>事件類型</span><select value={kind} onChange={(event) => setKind(event.target.value as LogKind | '')}><option value="">全部</option><option value="proxy">代理</option><option value="system">系統</option><option value="audit">稽核</option></select></label>
           <label className="field"><span>節點篩選</span><input value={node} maxLength={128} onChange={(event) => setNode(event.target.value)} /></label>
@@ -112,6 +109,7 @@ export function LogsView({ mode, client, statistics, onStatisticsChange }: {
           {events.length === 0 && <p className="empty-state">沒有符合條件的事件</p>}
         </div>
       </section>
+      {confirm && <ModalDialog title={confirmationTitle(confirm)} onClose={() => setConfirm(null)} size="medium" footer={(requestClose) => <><button className="secondary-button" type="button" onClick={requestClose}>取消</button><button className="danger-button" type="button" disabled={busy !== ''} onClick={() => confirm.kind === 'logs' ? void clearLogs() : void resetStatistics(confirm.node)}>確認{confirm.kind === 'logs' ? '清除全部日誌' : '歸零'}</button></>}><p>{confirmationMessage(confirm)}</p></ModalDialog>}
     </section>
   )
 }
@@ -121,10 +119,14 @@ function EventRow({ event }: { event: LogEvent }) {
   return <article className="event-row"><time dateTime={event.time}>{formatTime(event.time)}</time><span className={`event-kind kind-${event.kind}`}>{kindLabel(event.kind)}</span><div className="event-main"><strong>{event.action}</strong><span>{[event.node, event.protocol, event.actor].filter(Boolean).join(' · ') || '系統'}</span></div><div className="event-route"><span>{event.source_ip || '無來源'}</span><strong>{destination || '無目的地'}</strong><span>{event.outbound_ip || '無出站位址'}</span></div><span className={`status-badge status-${event.success ? 'healthy' : 'unhealthy'}`}>{event.success ? '成功' : '失敗'}</span>{event.error && <span className="event-error">{event.error}</span>}</article>
 }
 
-function Confirmation({ text, confirmLabel, busy, onCancel, onConfirm }: { text: string; confirmLabel: string; busy: boolean; onCancel: () => void; onConfirm: () => void }) {
-  return <div className="confirm-row destructive-confirm" role="alert"><span>{text}</span><button className="danger-button" type="button" disabled={busy} onClick={onConfirm}>{confirmLabel}</button><button className="secondary-button" type="button" onClick={onCancel}>取消</button></div>
+function confirmationTitle(confirm: Exclude<ConfirmAction, null>) {
+  if (confirm.kind === 'logs') return '清除全部日誌'
+  return confirm.node ? `歸零 ${confirm.node} 統計` : '歸零全部統計'
 }
-
+function confirmationMessage(confirm: Exclude<ConfirmAction, null>) {
+  if (confirm.kind === 'logs') return '將刪除目前日誌與所有輪替檔，操作本身會成為新日誌的第一筆稽核事件。'
+  return confirm.node ? `將清除 ${confirm.node} 的累計連線、流量與錯誤；活躍連線數保持不變。` : '將清除所有節點的累計連線、流量與錯誤；活躍連線數保持不變。'
+}
 function kindLabel(kind: LogKind) { return ({ proxy: '代理', system: '系統', audit: '稽核' })[kind] }
 function formatTime(value: string) { return new Date(value).toLocaleString('zh-TW') }
 function formatBytes(value: number) {
