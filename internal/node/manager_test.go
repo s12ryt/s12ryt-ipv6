@@ -90,6 +90,22 @@ func validConfig(id, name string) Config {
 	}
 }
 
+func TestNormalizeFolderName(t *testing.T) {
+	got, err := NormalizeFolderName("  批次 1  ")
+	if err != nil || got != "批次 1" {
+		t.Fatalf("NormalizeFolderName() = %q, %v", got, err)
+	}
+	if got, err := NormalizeFolderName(""); err != nil || got != "" {
+		t.Fatalf("NormalizeFolderName(empty) = %q, %v", got, err)
+	}
+	if _, err := NormalizeFolderName(strings.Repeat("節", 65)); err == nil {
+		t.Fatal("NormalizeFolderName(long name) error = nil")
+	}
+	if _, err := NormalizeFolderName("批次\n一"); err == nil {
+		t.Fatal("NormalizeFolderName(control character) error = nil")
+	}
+}
+
 func TestManagerCreatesAndImmediatelyStartsNode(t *testing.T) {
 	factory := newFakeRuntimeFactory()
 	manager, err := NewManager(factory, &fakePoolCleaner{}, 2)
@@ -107,6 +123,90 @@ func TestManagerCreatesAndImmediatelyStartsNode(t *testing.T) {
 	}
 	if operations := factory.operations(); !reflect.DeepEqual(operations, []string{"start:primary"}) {
 		t.Fatalf("operations = %#v", operations)
+	}
+}
+
+func TestManagerCreateBatchPreflightsBeforeStartingAnyRuntime(t *testing.T) {
+	tests := map[string][]Config{
+		"invalid config": {
+			validConfig("node-1", "first"),
+			func() Config { value := validConfig("node-2", "second"); value.Outbound = ""; return value }(),
+		},
+		"duplicate ID": {
+			validConfig("node-1", "first"),
+			validConfig("node-1", "second"),
+		},
+		"duplicate name": {
+			validConfig("node-1", "same"),
+			validConfig("node-2", "same"),
+		},
+		"duplicate manual port": {
+			func() Config { value := validConfig("node-1", "first"); value.Port = 52000; return value }(),
+			func() Config { value := validConfig("node-2", "second"); value.Port = 52000; return value }(),
+		},
+	}
+	for name, configs := range tests {
+		t.Run(name, func(t *testing.T) {
+			factory := newFakeRuntimeFactory()
+			manager, _ := NewManager(factory, nil, 10)
+			for index := range configs {
+				configs[index].Folder = "批次 1"
+			}
+			if _, err := manager.CreateBatch(context.Background(), configs, false); err == nil {
+				t.Fatal("CreateBatch() error = nil")
+			}
+			if operations := factory.operations(); len(operations) != 0 {
+				t.Fatalf("runtime operations before complete preflight = %#v", operations)
+			}
+			if len(manager.List()) != 0 {
+				t.Fatalf("nodes after rejected batch = %#v", manager.List())
+			}
+		})
+	}
+}
+
+func TestManagerCreateBatchRollsBackStartedNodesInReverseOrder(t *testing.T) {
+	factory := newFakeRuntimeFactory()
+	factory.startError["third"] = errors.New("bind failed")
+	manager, _ := NewManager(factory, nil, 10)
+	configs := []Config{
+		validConfig("node-1", "first"),
+		validConfig("node-2", "second"),
+		validConfig("node-3", "third"),
+	}
+	for index := range configs {
+		configs[index].Folder = "批次 1"
+	}
+
+	if _, err := manager.CreateBatch(context.Background(), configs, false); err == nil {
+		t.Fatal("CreateBatch() error = nil")
+	}
+	wantOperations := []string{"start:first", "start:second", "start:third", "stop:second", "stop:first"}
+	if operations := factory.operations(); !reflect.DeepEqual(operations, wantOperations) {
+		t.Fatalf("operations = %#v, want %#v", operations, wantOperations)
+	}
+	if len(manager.List()) != 0 {
+		t.Fatalf("nodes after rollback = %#v", manager.List())
+	}
+}
+
+func TestManagerCreateBatchCreatesEveryNodeWithOneUniqueFolder(t *testing.T) {
+	manager, _ := NewManager(newFakeRuntimeFactory(), nil, 10)
+	configs := []Config{validConfig("node-1", "first"), validConfig("node-2", "second")}
+	for index := range configs {
+		configs[index].Folder = "  批次 1  "
+	}
+	created, err := manager.CreateBatch(context.Background(), configs, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 2 || created[0].Config.Folder != "批次 1" || created[1].Config.Folder != "批次 1" {
+		t.Fatalf("created nodes = %#v", created)
+	}
+	conflicting := validConfig("node-3", "third")
+	conflicting.Folder = "批次 1"
+	if _, err := manager.CreateBatch(context.Background(), []Config{conflicting}, false); !errors.Is(err, ErrFolderExists) {
+		t.Fatalf("CreateBatch(existing folder) error = %v", err)
 	}
 }
 

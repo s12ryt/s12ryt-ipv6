@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/s12ryt/s12ryt-ipv6/internal/policy"
 	"github.com/s12ryt/s12ryt-ipv6/internal/proxy"
@@ -19,9 +21,14 @@ var (
 	ErrNodeExists                      = errors.New("node already exists")
 	ErrNodeNotFound                    = errors.New("node was not found")
 	ErrNodeLimit                       = errors.New("node limit reached")
+	ErrBatchSize                       = errors.New("node batch size must be between 1 and 100")
+	ErrFolderExists                    = errors.New("node folder already exists")
+	ErrFolderNotFound                  = errors.New("node folder was not found")
 	ErrUnauthenticatedRiskConfirmation = errors.New("unauthenticated proxy risk confirmation is required")
 	ErrPreviousRuntimeCleanup          = errors.New("replacement is running but previous node runtime cleanup failed")
 )
+
+const MaxBatchCreate = 100
 
 type Protocol string
 
@@ -49,6 +56,7 @@ const (
 type Config struct {
 	ID                string
 	Name              string
+	Folder            string
 	Protocol          Protocol
 	Username          string
 	Password          string
@@ -73,6 +81,9 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Name) == "" {
 		return errors.New("node name is required")
+	}
+	if _, err := NormalizeFolderName(c.Folder); err != nil {
+		return err
 	}
 	switch c.Protocol {
 	case ProtocolSOCKS, ProtocolHTTP, ProtocolMixed:
@@ -137,6 +148,25 @@ func (c Config) Validate() error {
 	return nil
 }
 
+func NormalizeFolderName(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if !utf8.ValidString(value) {
+		return "", errors.New("node folder must be valid UTF-8")
+	}
+	if utf8.RuneCountInString(value) > 64 {
+		return "", errors.New("node folder must not exceed 64 characters")
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return "", errors.New("node folder must not contain control characters")
+		}
+	}
+	return value, nil
+}
+
 type Node struct {
 	Config Config
 	Status Status
@@ -196,6 +226,11 @@ func NewManager(factory RuntimeFactory, pool DedicatedPoolCleaner, maxNodes int)
 }
 
 func (m *Manager) Create(ctx context.Context, config Config, confirmUnauthenticated bool) (Node, error) {
+	folder, folderErr := NormalizeFolderName(config.Folder)
+	if folderErr != nil {
+		return Node{}, folderErr
+	}
+	config.Folder = folder
 	if err := validateMutation(config, confirmUnauthenticated); err != nil {
 		return Node{}, err
 	}
@@ -219,7 +254,127 @@ func (m *Manager) Create(ctx context.Context, config Config, confirmUnauthentica
 	return Node{Config: cloneConfig(config), Status: StatusRunning}, nil
 }
 
+func (m *Manager) CreateBatch(ctx context.Context, configs []Config, confirmUnauthenticated bool) ([]Node, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(configs) == 0 || len(configs) > MaxBatchCreate {
+		return nil, ErrBatchSize
+	}
+	normalized := make([]Config, len(configs))
+	ids := make(map[string]struct{}, len(configs))
+	names := make(map[string]struct{}, len(configs))
+	ports := make(map[uint16]struct{}, len(configs))
+	folder := ""
+	for index, config := range configs {
+		normalizedFolder, err := NormalizeFolderName(config.Folder)
+		if err != nil {
+			return nil, fmt.Errorf("node %d folder: %w", index, err)
+		}
+		if normalizedFolder == "" {
+			return nil, errors.New("batch node folder is required")
+		}
+		config.Folder = normalizedFolder
+		if folder == "" {
+			folder = normalizedFolder
+		} else if folder != normalizedFolder {
+			return nil, errors.New("batch nodes must use one folder")
+		}
+		if err := validateMutation(config, confirmUnauthenticated); err != nil {
+			return nil, fmt.Errorf("validate batch node %q: %w", config.ID, err)
+		}
+		if _, duplicate := ids[config.ID]; duplicate {
+			return nil, fmt.Errorf("%w: duplicate batch node ID %q", ErrNodeExists, config.ID)
+		}
+		ids[config.ID] = struct{}{}
+		if _, duplicate := names[config.Name]; duplicate {
+			return nil, fmt.Errorf("duplicate batch node name %q", config.Name)
+		}
+		names[config.Name] = struct{}{}
+		if config.Port != 0 {
+			if _, duplicate := ports[config.Port]; duplicate {
+				return nil, fmt.Errorf("duplicate batch node port %d", config.Port)
+			}
+			ports[config.Port] = struct{}{}
+		}
+		normalized[index] = config
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.nodes)+len(normalized) > m.maxNodes {
+		return nil, ErrNodeLimit
+	}
+	for _, current := range m.nodes {
+		if current.config.Folder == folder {
+			return nil, ErrFolderExists
+		}
+	}
+	for _, config := range normalized {
+		if _, exists := m.nodes[config.ID]; exists {
+			return nil, ErrNodeExists
+		}
+	}
+
+	createdIDs := make([]string, 0, len(normalized))
+	created := make([]Node, 0, len(normalized))
+	for _, config := range normalized {
+		runtime, err := m.factory.Start(ctx, config)
+		if err != nil {
+			rollbackErr := m.rollbackBatchLocked(context.WithoutCancel(ctx), createdIDs)
+			return nil, errors.Join(fmt.Errorf("start batch node %q: %w", config.ID, err), rollbackErr)
+		}
+		if runtime == nil {
+			rollbackErr := m.rollbackBatchLocked(context.WithoutCancel(ctx), createdIDs)
+			return nil, errors.Join(fmt.Errorf("start batch node %q: runtime factory returned nil", config.ID), rollbackErr)
+		}
+		config.Port = runtime.Port()
+		m.nodes[config.ID] = &managedNode{config: config, status: StatusRunning, runtime: runtime}
+		createdIDs = append(createdIDs, config.ID)
+		created = append(created, Node{Config: cloneConfig(config), Status: StatusRunning})
+	}
+	return created, nil
+}
+
+func (m *Manager) rollbackBatch(ctx context.Context, ids []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.rollbackBatchLocked(ctx, ids)
+}
+
+func (m *Manager) rollbackBatchLocked(ctx context.Context, ids []string) error {
+	var failures []error
+	for index := len(ids) - 1; index >= 0; index-- {
+		id := ids[index]
+		current := m.nodes[id]
+		if current == nil {
+			continue
+		}
+		if current.status == StatusRunning {
+			if err := current.runtime.Stop(ctx); err != nil {
+				failures = append(failures, fmt.Errorf("stop rolled back node %q: %w", id, err))
+				continue
+			}
+			current.runtime = nil
+			current.status = StatusStopped
+		}
+		if current.config.DedicatedPool != "" && m.pool != nil {
+			if err := m.pool.DeleteDedicatedPool(ctx, current.config.DedicatedPool); err != nil {
+				failures = append(failures, fmt.Errorf("clean rolled back node %q dedicated pool: %w", id, err))
+				continue
+			}
+		}
+		delete(m.nodes, id)
+	}
+	return errors.Join(failures...)
+}
+
 func (m *Manager) Update(ctx context.Context, id string, config Config, confirmUnauthenticated bool) (Node, error) {
+	folder, folderErr := NormalizeFolderName(config.Folder)
+	if folderErr != nil {
+		return Node{}, folderErr
+	}
+	config.Folder = folder
 	if config.ID != id {
 		return Node{}, errors.New("node ID cannot be changed")
 	}
@@ -302,6 +457,68 @@ func (m *Manager) Stop(ctx context.Context, id string) (Node, error) {
 	current.runtime = nil
 	current.status = StatusStopped
 	return nodeSnapshot(current), nil
+}
+
+func (m *Manager) MoveToFolder(ctx context.Context, id, folder string) (Node, error) {
+	if err := ctx.Err(); err != nil {
+		return Node{}, err
+	}
+	normalized, err := NormalizeFolderName(folder)
+	if err != nil {
+		return Node{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current := m.nodes[id]
+	if current == nil {
+		return Node{}, ErrNodeNotFound
+	}
+	current.config.Folder = normalized
+	return nodeSnapshot(current), nil
+}
+
+func (m *Manager) RenameFolder(ctx context.Context, source, target string) ([]Node, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	source, err := NormalizeFolderName(source)
+	if err != nil || source == "" {
+		if err == nil {
+			err = errors.New("source node folder is required")
+		}
+		return nil, err
+	}
+	target, err = NormalizeFolderName(target)
+	if err != nil || target == "" {
+		if err == nil {
+			err = errors.New("target node folder is required")
+		}
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	found := false
+	if source != target {
+		for _, current := range m.nodes {
+			if current.config.Folder == target {
+				return nil, ErrFolderExists
+			}
+		}
+	}
+	result := make([]Node, 0)
+	for _, current := range m.nodes {
+		if current.config.Folder != source {
+			continue
+		}
+		found = true
+		current.config.Folder = target
+		result = append(result, nodeSnapshot(current))
+	}
+	if !found {
+		return nil, ErrFolderNotFound
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Config.ID < result[j].Config.ID })
+	return result, nil
 }
 
 func (m *Manager) Delete(ctx context.Context, id string) error {
