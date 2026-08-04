@@ -92,3 +92,9 @@
 - React節點頁新增「一鍵建立多節點」、共用設定、ID／名稱／埠預覽、資料夾排序／收合與批量複製／啟停／刪除。收合狀態只保存在 `s12ryt_node_folders_collapsed`；未分類始終最後且不提供伺服器資料夾操作。基礎模式隱藏進階限制，模式切換不清除批次表單或預覽。
 - 品質審查以Playwright發現未分類名稱空字串會誤觸資料夾刪除確認，先新增RED測試，再要求非空folder才能顯示確認。最終前端11 files／53 tests、ESLint與Vite build通過；Go全套測試、vet、Linux amd64／arm64 build與network/firewall integration test binary交叉編譯均通過。
 - Playwright使用去敏API mock實際驗證批次建立、資料夾收合／移動／改名、部分失敗的整批停止與未分類安全行為；375／768／1024／1440在基礎／進階模式下皆無document、main、批次預覽或資料夾標題水平溢出，console為0 errors。Windows仍未執行真實Linux root/netns網路整合測試。
+- 完成管理面板 modal、控制項、側欄與動畫需求澄清，契約記於 `agent/question.md` 第22節。登入頁維持專用畫面；登入後所有設定填寫與寫入命令改由 modal 承載，連通性測試及日誌篩選仍可直接執行。
+- 以TDD新增共用 `ModalDialog`：React portal、ARIA dialog/modal/title、focus trap與觸發點還原、body背景捲動鎖、backdrop不可關閉；乾淨表單的Esc／X／取消可直接關閉，髒表單會疊加「放棄未儲存的變更」確認。品質審查再以RED證明巢狀確認期間底層dialog仍可能被輔助技術讀取，GREEN後套用`aria-hidden`及`inert`，第二層Esc只返回原編輯表單。
+- 以TDD新增保留native input與鍵盤語意的 `CheckboxField`，並統一text、number、password、textarea、select、checkbox的亮／暗主題、focus、disabled與hover樣式。桌面側欄可由220px收合至68px，偏好保存於`s12ryt_sidebar_collapsed`；手機仍使用橫向導覽。
+- 節點單筆與批次、資料夾、IPv6資源、NAT64、Resolver、管理密碼、統計歸零及日誌清除等寫入操作皆遷移至modal。批次節點採共用設定、逐列預覽、最終確認三步；返回及基礎／進階切換均保留表單與預覽。所有modal具固定header/footer及獨立捲動body，手機使用近全屏版面。
+- CSS加入160至220ms的modal/backdrop、頁面、側欄、收合、步驟與回饋動畫，沒有hover scale或layout shift；`prefers-reduced-motion`下計算後動畫與transition降至0.01ms。
+- 本輪驗證：前端13個test files／63項測試、ESLint、TypeScript與Vite production build全部通過，LSP對核心modal與日誌元件無診斷。Playwright以去敏API mock驗證側欄偏好、focus trap、髒表單巢狀確認、鍵盤Esc返回、375px手機全屏modal，以及桌面代表性wide／medium／confirm modal；五頁在375px無document、workspace或警告列水平溢出，console為0 errors。瀏覽器、Vite程序、截圖與臨時檔均已清理。
