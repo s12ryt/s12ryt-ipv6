@@ -1,11 +1,13 @@
 import { FormEvent, ReactNode, useEffect, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, Copy, Eye, EyeOff, FolderPlus, Layers3, Link2, Pencil, Play, Plus, RotateCcw, Square, Trash2, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, Copy, Eye, EyeOff, FolderInput, FolderPlus, Layers3, Link2, Pencil, Play, Plus, RotateCcw, Square, Trash2 } from 'lucide-react'
 import { APIError, ApiClient, InboundMode, NodeMutation, NodeProtocol, NodeRecord, ResourceSnapshot, ULAOverride } from './api'
 import { nextBatchFolderName, nextNodeIdentities, nextNodeIdentity } from './automaticNames'
 import { copyText } from './clipboard'
 import { buildNodeConnectionInfo } from './nodeConnection'
 import { groupNodesByFolder, persistCollapsedFolders, storedCollapsedFolders } from './nodeFolders'
 import type { PanelMode } from './panelMode'
+import { CheckboxField } from './CheckboxField'
+import { ModalDialog } from './ModalDialog'
 
 type NodeClient = Pick<ApiClient, 'mutate'>
 
@@ -67,6 +69,19 @@ interface CopyFeedback {
   kind: 'connection' | 'credentials'
 }
 
+interface ConfirmationState {
+  title: string
+  message: string
+  confirmLabel: string
+  tone?: 'danger'
+  run: () => Promise<void>
+}
+
+interface MoveState {
+  node: NodeRecord
+  target: string
+}
+
 const emptyForm: NodeFormState = {
   id: '', name: '', folder: '', protocol: 'mixed', authentication: 'credentials', username: '', password: '',
   outbound: '', port: '0', inboundMode: 'ipv6', inboundResource: '',
@@ -76,10 +91,12 @@ const emptyForm: NodeFormState = {
 
 export function NodesView({ mode, client, nodes, resources, onChange }: NodesViewProps) {
   const [form, setForm] = useState<NodeFormState | null>(null)
+  const [formBaseline, setFormBaseline] = useState('')
   const [batch, setBatch] = useState<BatchFormState | null>(null)
+  const [batchBaseline, setBatchBaseline] = useState('')
+  const [batchStep, setBatchStep] = useState(0)
   const [editingID, setEditingID] = useState('')
   const [visibleSecrets, setVisibleSecrets] = useState<Set<string>>(new Set())
-  const [deleteID, setDeleteID] = useState('')
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const [manualCopy, setManualCopy] = useState<ManualCopyState | null>(null)
@@ -87,7 +104,8 @@ export function NodesView({ mode, client, nodes, resources, onChange }: NodesVie
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(storedCollapsedFolders)
   const [renamingFolder, setRenamingFolder] = useState('')
   const [renameTarget, setRenameTarget] = useState('')
-  const [deleteFolder, setDeleteFolder] = useState('')
+  const [moving, setMoving] = useState<MoveState | null>(null)
+  const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null)
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const manualCopyInput = useRef<HTMLTextAreaElement | null>(null)
   const groups = groupNodesByFolder(nodes)
@@ -108,6 +126,43 @@ export function NodesView({ mode, client, nodes, resources, onChange }: NodesVie
       ? nodes.map((item) => (item.id === value.id ? value : item))
       : [...nodes, value].sort((a, b) => a.id.localeCompare(b.id))
     onChange(next)
+  }
+
+  const closeForm = () => {
+    setForm(null)
+    setFormBaseline('')
+    setEditingID('')
+  }
+
+  const closeBatch = () => {
+    setBatch(null)
+    setBatchBaseline('')
+    setBatchStep(0)
+  }
+
+  const openForm = (value: NodeFormState, editing = '') => {
+    setBatch(null)
+    setEditingID(editing)
+    setForm(value)
+    setFormBaseline(JSON.stringify(value))
+  }
+
+  const openBatch = () => {
+    const value = defaultBatch(resources, nodes)
+    setForm(null)
+    setEditingID('')
+    setBatch(value)
+    setBatchBaseline(JSON.stringify(value))
+    setBatchStep(0)
+  }
+
+  const requestConfirmation = (value: ConfirmationState) => setConfirmation(value)
+
+  const runConfirmation = async () => {
+    const current = confirmation
+    if (!current) return
+    await current.run()
+    setConfirmation(null)
   }
 
   const mergeNodes = (values: NodeRecord[]) => {
@@ -137,7 +192,6 @@ export function NodesView({ mode, client, nodes, resources, onChange }: NodesVie
     try {
       await client.mutate<void>(`/api/nodes/${encodeURIComponent(id)}`, 'DELETE', {})
       onChange(nodes.filter((item) => item.id !== id))
-      setDeleteID('')
     } catch (reason) {
       setError(messageFor(reason, '節點刪除失敗'))
     } finally {
@@ -245,6 +299,7 @@ export function NodesView({ mode, client, nodes, resources, onChange }: NodesVie
     setError('')
     try {
       replaceNode(await client.mutate<NodeRecord>(`/api/nodes/${encodeURIComponent(node.id)}/folder`, 'PUT', { folder }))
+      setMoving(null)
     } catch (reason) {
       setError(messageFor(reason, '節點移動失敗'))
     } finally {
@@ -265,7 +320,6 @@ export function NodesView({ mode, client, nodes, resources, onChange }: NodesVie
       if (operation === 'delete') onChange(nodes.filter((node) => !succeeded.has(node.id)))
       else onChange(nodes.map((node) => succeeded.has(node.id) ? { ...node, status: operation === 'start' ? 'running' : 'stopped' } : node))
       if (result.failed.length) setError(result.failed.map((failure) => `${failure.id}：${failure.error}`).join('；'))
-      if (operation === 'delete') setDeleteFolder('')
     } catch (reason) {
       setError(messageFor(reason, '資料夾批量操作失敗'))
     } finally {
@@ -296,7 +350,7 @@ export function NodesView({ mode, client, nodes, resources, onChange }: NodesVie
       })
       mergeNodes(created)
       setVisibleSecrets((current) => new Set([...current, ...created.filter(hasCredentials).map((node) => node.id)]))
-      setBatch(null)
+      closeBatch()
     } catch (reason) {
       setError(messageFor(reason, '批次節點未建立'))
     } finally {
@@ -315,8 +369,7 @@ export function NodesView({ mode, client, nodes, resources, onChange }: NodesVie
       const result = await client.mutate<NodeRecord>(path, editingID ? 'PUT' : 'POST', payload)
       replaceNode(result)
       if (result.authentication !== 'none') setVisibleSecrets((current) => new Set(current).add(result.id))
-      setForm(null)
-      setEditingID('')
+      closeForm()
     } catch (reason) {
       setError(messageFor(reason, '節點設定未儲存'))
     } finally {
@@ -325,8 +378,7 @@ export function NodesView({ mode, client, nodes, resources, onChange }: NodesVie
   }
 
   const beginEdit = (node: NodeRecord) => {
-    setEditingID(node.id)
-    setForm({
+    openForm({
       id: node.id, name: node.name, folder: node.folder ?? '', protocol: node.protocol,
       authentication: node.authentication ?? (node.username ? 'credentials' : 'none'),
       username: node.username ?? '', password: node.password ?? '', outbound: node.outbound,
@@ -334,7 +386,18 @@ export function NodesView({ mode, client, nodes, resources, onChange }: NodesVie
       maxTCP: String(node.max_tcp), maxUDP: String(node.max_udp), dialTimeout: node.dial_timeout,
       handshakeTimeout: node.handshake_timeout, tunnelIdleTimeout: node.tunnel_idle_timeout,
       udpIdleTimeout: node.udp_idle_timeout, ulaOverride: node.ula_override, confirmUnauthenticated: false,
-    })
+    }, node.id)
+  }
+
+  const handleBatchSubmit = (event: FormEvent<HTMLFormElement>) => {
+    if (!batch) return
+    if (batchStep === 2) {
+      void submitBatch(event)
+      return
+    }
+    event.preventDefault()
+    if (batchStep === 0) setBatch(regenerateBatchPreview(batch, nodes))
+    setBatchStep((step) => step + 1)
   }
 
   return (
@@ -342,23 +405,84 @@ export function NodesView({ mode, client, nodes, resources, onChange }: NodesVie
       <div className="page-heading">
         <div><p className="eyebrow">代理服務</p><h1 id="page-title">節點</h1></div>
         <div className="toolbar-actions">
-          <button className="secondary-button" type="button" onClick={() => { setForm(null); setEditingID(''); setBatch(defaultBatch(resources, nodes)) }}>
+          <button className="secondary-button" type="button" onClick={openBatch}>
             <Layers3 size={17} aria-hidden="true" />一鍵建立多節點
           </button>
-          <button className="primary-button" type="button" onClick={() => { setBatch(null); setEditingID(''); setForm(defaultForm(resources, nodes)) }}>
+          <button className="primary-button" type="button" onClick={() => openForm(defaultForm(resources, nodes))}>
             <Plus size={17} aria-hidden="true" />新增節點
           </button>
         </div>
       </div>
       {error && <div className="inline-error page-message" role="alert">{error}</div>}
-      {form && <NodeEditor mode={mode} form={form} editing={Boolean(editingID)} busy={busy === 'form'} resources={resources} folders={folderNames} onChange={setForm} onSubmit={submit} onCancel={() => { setForm(null); setEditingID('') }} />}
-      {batch && <BatchNodeEditor mode={mode} value={batch} busy={busy === 'batch'} resources={resources} existingNodes={nodes} onChange={setBatch} onSubmit={submitBatch} onCancel={() => setBatch(null)} />}
+      {form && (
+        <ModalDialog
+          title={editingID ? `編輯節點 ${editingID}` : '新增節點'}
+          dirty={JSON.stringify(form) !== formBaseline}
+          onClose={closeForm}
+          size="wide"
+          footer={(requestClose) => <>
+            <button className="secondary-button" type="button" onClick={requestClose}>取消</button>
+            <button className="primary-button" type="submit" form="node-editor-form" disabled={busy === 'form' || (form.authentication === 'none' && !form.confirmUnauthenticated)}>{editingID ? '儲存並切換' : '建立並啟動'}</button>
+          </>}
+        >
+          <NodeEditor id="node-editor-form" mode={mode} form={form} editing={Boolean(editingID)} resources={resources} folders={folderNames} onChange={setForm} onSubmit={submit} />
+        </ModalDialog>
+      )}
+      {batch && (
+        <ModalDialog
+          title="一鍵建立多節點"
+          dirty={JSON.stringify(batch) !== batchBaseline}
+          onClose={closeBatch}
+          size="wide"
+          footer={(requestClose) => <>
+            <button className="secondary-button" type="button" onClick={requestClose}>取消</button>
+            {batchStep > 0 && <button className="secondary-button" type="button" onClick={() => setBatchStep((step) => step - 1)}>上一步</button>}
+            <button
+              className="primary-button"
+              type="submit"
+              form="batch-node-form"
+              disabled={busy === 'batch' || (batchStep === 0 && batch.settings.authentication === 'none' && !batch.settings.confirmUnauthenticated)}
+            >
+              {batchStep === 0 ? '下一步：預覽' : batchStep === 1 ? '下一步：確認' : `建立 ${batch.preview.length} 個節點`}
+            </button>
+          </>}
+        >
+          <BatchNodeEditor id="batch-node-form" step={batchStep} mode={mode} value={batch} resources={resources} existingNodes={nodes} onChange={setBatch} onSubmit={handleBatchSubmit} />
+        </ModalDialog>
+      )}
       {renamingFolder && (
-        <div className="compact-confirm folder-rename" role="group" aria-label={`重新命名 ${renamingFolder}`}>
-          <Field label="資料夾新名稱"><input value={renameTarget} maxLength={64} onChange={(event) => setRenameTarget(event.target.value)} required /></Field>
-          <button className="primary-button" type="button" disabled={busy !== '' || !renameTarget.trim()} onClick={() => void rename()}>確認重新命名</button>
-          <button className="secondary-button" type="button" onClick={() => { setRenamingFolder(''); setRenameTarget('') }}>取消</button>
-        </div>
+        <ModalDialog
+          title={`重新命名資料夾 ${renamingFolder}`}
+          dirty={renameTarget.trim() !== renamingFolder}
+          onClose={() => { setRenamingFolder(''); setRenameTarget('') }}
+          size="medium"
+          footer={(requestClose) => <><button className="secondary-button" type="button" onClick={requestClose}>取消</button><button className="primary-button" type="submit" form="rename-folder-form" disabled={busy !== '' || !renameTarget.trim()}>確認重新命名</button></>}
+        >
+          <form id="rename-folder-form" className="modal-form" onSubmit={(event) => { event.preventDefault(); void rename() }}>
+            <Field label="資料夾新名稱"><input data-autofocus value={renameTarget} maxLength={64} onChange={(event) => setRenameTarget(event.target.value)} required /></Field>
+          </form>
+        </ModalDialog>
+      )}
+      {moving && (
+        <ModalDialog
+          title={`移動節點 ${moving.node.id}`}
+          dirty={moving.target !== (moving.node.folder ?? '')}
+          onClose={() => setMoving(null)}
+          size="medium"
+          footer={(requestClose) => <><button className="secondary-button" type="button" onClick={requestClose}>取消</button><button className="primary-button" type="button" disabled={busy !== ''} onClick={() => void moveNode(moving.node, moving.target)}>確認移動</button></>}
+        >
+          <Field label="目標資料夾"><select data-autofocus value={moving.target} onChange={(event) => setMoving({ ...moving, target: event.target.value })}><option value="">未分類</option>{folderNames.map((folder) => <option value={folder} key={folder}>{folder}</option>)}</select></Field>
+        </ModalDialog>
+      )}
+      {confirmation && (
+        <ModalDialog
+          title={confirmation.title}
+          onClose={() => setConfirmation(null)}
+          size="medium"
+          footer={(requestClose) => <><button className="secondary-button" type="button" onClick={requestClose}>取消</button><button className={confirmation.tone === 'danger' ? 'danger-button' : 'primary-button'} type="button" disabled={busy !== ''} onClick={() => void runConfirmation()}>{confirmation.confirmLabel}</button></>}
+        >
+          <p>{confirmation.message}</p>
+        </ModalDialog>
       )}
       <div className="node-folder-list" aria-label="代理節點資料夾">
         {nodes.length === 0 ? <p className="empty-state">尚未建立節點</p> : groups.map((group) => {
@@ -373,14 +497,13 @@ export function NodesView({ mode, client, nodes, resources, onChange }: NodesVie
                 {group.name && <div className="row-actions">
                   <IconButton label={`複製 ${group.name} 全部連線資訊`} icon={Link2} onClick={() => void copyFolderValue(group.name, group.nodes, 'connection')} />
                   {group.nodes.some(hasCredentials) && <IconButton label={`複製 ${group.name} 全部帳密`} icon={Copy} onClick={() => void copyFolderValue(group.name, group.nodes, 'credentials')} />}
-                  <IconButton label={`全部啟動 ${group.name}`} icon={Play} disabled={busy !== ''} onClick={() => void folderAction(group.name, 'start')} />
-                  <IconButton label={`全部停止 ${group.name}`} icon={Square} disabled={busy !== ''} onClick={() => void folderAction(group.name, 'stop')} />
+                  <IconButton label={`全部啟動 ${group.name}`} icon={Play} disabled={busy !== ''} onClick={() => requestConfirmation({ title: `啟動 ${group.name} 全部節點`, message: '將逐一啟動資料夾內所有已停止節點，失敗項目會個別回報。', confirmLabel: '確認全部啟動', run: () => folderAction(group.name, 'start') })} />
+                  <IconButton label={`全部停止 ${group.name}`} icon={Square} disabled={busy !== ''} onClick={() => requestConfirmation({ title: `停止 ${group.name} 全部節點`, message: '將逐一停止資料夾內所有節點，現有連線會被中止。', confirmLabel: '確認全部停止', run: () => folderAction(group.name, 'stop') })} />
                   <IconButton label={`重新命名 ${group.name}`} icon={Pencil} disabled={busy !== ''} onClick={() => { setRenamingFolder(group.name); setRenameTarget(group.name) }} />
-                  <IconButton label={`刪除資料夾 ${group.name}`} icon={Trash2} tone="danger" disabled={busy !== ''} onClick={() => setDeleteFolder(group.name)} />
+                  <IconButton label={`刪除資料夾 ${group.name}`} icon={Trash2} tone="danger" disabled={busy !== ''} onClick={() => requestConfirmation({ title: `刪除資料夾 ${group.name}`, message: '將逐一刪除資料夾內全部節點，成功項目不會因其他節點失敗而還原。', confirmLabel: '確認刪除資料夾', tone: 'danger', run: () => folderAction(group.name, 'delete', true) })} />
                   {copyFeedback?.target === group.name && <span className="copy-feedback" role="status">已複製</span>}
                 </div>}
               </div>
-              {group.name && deleteFolder === group.name && <div className="confirm-row" role="alert"><span>將逐一刪除資料夾內全部節點，成功項目不會因其他節點失敗而還原。</span><button className="danger-button" type="button" onClick={() => void folderAction(group.name, 'delete', true)}>確認刪除資料夾</button><button className="secondary-button" type="button" onClick={() => setDeleteFolder('')}>取消</button></div>}
               {!collapsed && <div className="resource-table" role="table" aria-label={`${group.label} 節點`}>
                 <div className="resource-table-head" role="row"><span>節點</span><span>入站</span><span>出站</span><span>狀態</span><span>操作</span></div>
                 {group.nodes.map((node) => {
@@ -392,18 +515,19 @@ export function NodesView({ mode, client, nodes, resources, onChange }: NodesVie
                     <div role="cell"><span className="mono">{node.outbound}</span><span>{authenticated ? '帳密認證' : '無認證'}</span></div>
                     <div role="cell"><span className={`status-badge status-${node.status === 'running' ? 'healthy' : 'unhealthy'}`}>{node.status === 'running' ? '運行中' : '已停止'}</span></div>
                     <div className="row-actions" role="cell">
-                      {node.status === 'running' ? <IconButton label={`停止 ${node.id}`} icon={Square} disabled={busy !== ''} onClick={() => void action(node, 'stop')} /> : <IconButton label={`啟動 ${node.id}`} icon={Play} disabled={busy !== ''} onClick={() => void action(node, 'start')} />}
+                      {node.status === 'running'
+                        ? <IconButton label={`停止 ${node.id}`} icon={Square} disabled={busy !== ''} onClick={() => requestConfirmation({ title: `停止節點 ${node.id}`, message: '停止節點會立即中止其TCP與UDP連線。', confirmLabel: '確認停止', run: () => action(node, 'stop') })} />
+                        : <IconButton label={`啟動 ${node.id}`} icon={Play} disabled={busy !== ''} onClick={() => requestConfirmation({ title: `啟動節點 ${node.id}`, message: '將以目前設定啟動此節點。', confirmLabel: '確認啟動', run: () => action(node, 'start') })} />}
                       <IconButton label={`編輯 ${node.id}`} icon={Pencil} disabled={busy !== ''} onClick={() => beginEdit(node)} />
                       <IconButton label={`複製 ${node.id} 連線資訊`} icon={Link2} onClick={() => void copyNodeValue(node, 'connection')} />
                       {authenticated && <IconButton label={`${visible ? '隱藏' : '顯示'} ${node.id} 帳密`} icon={visible ? EyeOff : Eye} onClick={() => setVisibleSecrets(toggleSet(visibleSecrets, node.id))} />}
                       {authenticated && <IconButton label={`複製 ${node.id} 連線帳密`} icon={Copy} onClick={() => void copyNodeValue(node, 'credentials')} />}
-                      {authenticated && <IconButton label={`重設 ${node.id} 帳密`} icon={RotateCcw} disabled={busy !== ''} onClick={() => void resetCredentials(node)} />}
-                      <IconButton label={`刪除 ${node.id}`} icon={Trash2} tone="danger" disabled={busy !== ''} onClick={() => setDeleteID(node.id)} />
+                      {authenticated && <IconButton label={`重設 ${node.id} 帳密`} icon={RotateCcw} disabled={busy !== ''} onClick={() => requestConfirmation({ title: `重設節點 ${node.id} 帳密`, message: '現有帳密會立即失效，節點連線也會切換到新設定。', confirmLabel: '確認重設帳密', run: () => resetCredentials(node) })} />}
+                      <IconButton label={`移動 ${node.id}`} icon={FolderInput} disabled={busy !== ''} onClick={() => setMoving({ node, target: node.folder ?? '' })} />
+                      <IconButton label={`刪除 ${node.id}`} icon={Trash2} tone="danger" disabled={busy !== ''} onClick={() => requestConfirmation({ title: `刪除節點 ${node.id}`, message: '刪除會立即中止所有連線。', confirmLabel: '確認刪除', tone: 'danger', run: () => remove(node.id) })} />
                       {copyFeedback?.target === node.id && <span className="copy-feedback" role="status">已複製</span>}
                     </div>
-                    <div className="node-folder-move"><label><span>資料夾</span><select aria-label={`移動 ${node.id} 至資料夾`} value={node.folder ?? ''} disabled={busy !== ''} onChange={(event) => void moveNode(node, event.target.value)}><option value="">未分類</option>{folderNames.map((folder) => <option value={folder} key={folder}>{folder}</option>)}</select></label></div>
                     {visible && authenticated && <div className="secret-row"><span className="mono">{node.username}</span><span className="mono">{node.password}</span></div>}
-                    {deleteID === node.id && <div className="confirm-row" role="alert"><span>刪除會立即中止所有連線。</span><button className="danger-button" type="button" onClick={() => void remove(node.id)}>確認刪除 {node.id}</button><button className="secondary-button" type="button" onClick={() => setDeleteID('')}>取消</button></div>}
                   </div>
                 })}
               </div>}
@@ -412,57 +536,47 @@ export function NodesView({ mode, client, nodes, resources, onChange }: NodesVie
         })}
       </div>
       {manualCopy && (
-        <div className="copy-dialog-backdrop">
-          <section className="copy-dialog" role="dialog" aria-modal="true" aria-labelledby="manual-copy-title">
-            <div className="section-heading">
-              <h2 id="manual-copy-title">{manualCopy.title}</h2>
-              <IconButton label="關閉手動複製" icon={X} onClick={() => setManualCopy(null)} />
-            </div>
-            <p>瀏覽器禁止自動存取剪貼簿，請手動複製以下內容。</p>
-            <label className="field">
-              <span>手動複製內容</span>
-              <textarea ref={manualCopyInput} value={manualCopy.value} readOnly rows={Math.min(8, manualCopy.value.split('\n').length + 1)} onFocus={(event) => event.currentTarget.select()} />
-            </label>
-            <div className="form-actions">
-              <button className="secondary-button" type="button" onClick={() => { manualCopyInput.current?.focus(); manualCopyInput.current?.select() }}>選取全部</button>
-              <button className="primary-button" type="button" onClick={() => setManualCopy(null)}>完成</button>
-            </div>
-          </section>
-        </div>
+        <ModalDialog
+          title={manualCopy.title}
+          onClose={() => setManualCopy(null)}
+          size="medium"
+          footer={() => <><button className="secondary-button" type="button" onClick={() => { manualCopyInput.current?.focus(); manualCopyInput.current?.select() }}>選取全部</button><button className="primary-button" type="button" onClick={() => setManualCopy(null)}>完成</button></>}
+        >
+          <p>瀏覽器禁止自動存取剪貼簿，請手動複製以下內容。</p>
+          <label className="field">
+            <span>手動複製內容</span>
+            <textarea data-autofocus ref={manualCopyInput} value={manualCopy.value} readOnly rows={Math.min(8, manualCopy.value.split('\n').length + 1)} onFocus={(event) => event.currentTarget.select()} />
+          </label>
+        </ModalDialog>
       )}
     </section>
   )
 }
 
-function BatchNodeEditor({ mode, value, busy, resources, existingNodes, onChange, onSubmit, onCancel }: {
+function BatchNodeEditor({ id, step, mode, value, resources, existingNodes, onChange, onSubmit }: {
+  id: string
+  step: number
   mode: PanelMode
   value: BatchFormState
-  busy: boolean
   resources: ResourceSnapshot
   existingNodes: NodeRecord[]
   onChange: (value: BatchFormState) => void
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
-  onCancel: () => void
 }) {
   const setSetting = <K extends keyof NodeFormState>(key: K, setting: NodeFormState[K]) => onChange({ ...value, settings: { ...value.settings, [key]: setting } })
   const inboundResources = [...resources.fixed.map((item) => item.name), ...resources.pools.filter((item) => item.kind === 'inbound').map((item) => item.name)]
   const outboundResources = [...resources.fixed.map((item) => item.name), ...resources.pools.filter((item) => item.kind !== 'inbound').map((item) => item.name)]
-  const regenerate = () => {
-    const count = Math.min(100, Math.max(1, Number.parseInt(value.count, 10) || 1))
-    const preview = nextNodeIdentities(existingNodes, count).map((identity) => ({ ...identity, port: '0' }))
-    onChange({ ...value, count: String(count), preview })
-  }
   const updatePreview = (index: number, key: keyof BatchPreviewRow, fieldValue: string) => {
     onChange({ ...value, preview: value.preview.map((row, rowIndex) => rowIndex === index ? { ...row, [key]: fieldValue } : row) })
   }
-  return <form className="editor-panel batch-editor" onSubmit={onSubmit}>
-    <div className="section-heading"><div><p className="eyebrow">交易式建立</p><h2>一鍵建立多節點</h2></div><IconButton label="關閉批次節點表單" icon={X} onClick={onCancel} /></div>
-    <div className="form-grid">
-      <Field label="資料夾名稱"><input value={value.folder} maxLength={64} onChange={(event) => onChange({ ...value, folder: event.target.value })} required /></Field>
+  return <form id={id} className="modal-form batch-editor" onSubmit={onSubmit}>
+    <div className="step-indicator" aria-live="polite"><span>步驟 {step + 1} / 3</span><strong>{['共用設定', '逐列預覽', '最終確認'][step]}</strong></div>
+    {step === 0 && <div className="form-grid step-panel">
+      <Field label="資料夾名稱"><input data-autofocus value={value.folder} maxLength={64} onChange={(event) => onChange({ ...value, folder: event.target.value })} required /></Field>
       <Field label="節點數量"><input type="number" min="1" max="100" value={value.count} onChange={(event) => onChange({ ...value, count: event.target.value })} required /></Field>
       <Field label="批次協定"><select value={value.settings.protocol} onChange={(event) => setSetting('protocol', event.target.value as NodeProtocol)}><option value="mixed">SOCKS + HTTP</option><option value="socks">SOCKS5</option><option value="http">HTTP</option></select></Field>
       <Field label="批次代理認證"><select value={value.settings.authentication} onChange={(event) => setSetting('authentication', event.target.value as 'credentials' | 'none')}><option value="credentials">每節點自動產生不同帳密</option><option value="none">無認證</option></select></Field>
-      {value.settings.authentication === 'none' && <div className="risk-field" role="alert"><span>整批節點將不使用認證，可能成為公開代理。</span><label><input type="checkbox" checked={value.settings.confirmUnauthenticated} onChange={(event) => setSetting('confirmUnauthenticated', event.target.checked)} />我確認整批公開代理風險</label></div>}
+      {value.settings.authentication === 'none' && <div className="risk-field" role="alert"><span>整批節點將不使用認證，可能成為公開代理。</span><CheckboxField checked={value.settings.confirmUnauthenticated} onChange={(checked) => setSetting('confirmUnauthenticated', checked)}>我確認整批公開代理風險</CheckboxField></div>}
       <Field label="批次出站資源"><select value={value.settings.outbound} onChange={(event) => setSetting('outbound', event.target.value)} required><option value="">請選擇</option>{outboundResources.map((name) => <option key={name} value={name}>{name}</option>)}</select></Field>
       <Field label="批次入站位址族"><select value={value.settings.inboundMode} onChange={(event) => setSetting('inboundMode', event.target.value as InboundMode)}><option value="ipv6">僅 IPv6</option><option value="ipv4">僅 IPv4</option><option value="dual">雙棧</option></select></Field>
       {value.settings.inboundMode !== 'ipv4' && <Field label="批次 IPv6 入站資源"><select value={value.settings.inboundResource} onChange={(event) => setSetting('inboundResource', event.target.value)} required><option value="">請選擇</option>{inboundResources.map((name) => <option key={name} value={name}>{name}</option>)}</select></Field>}
@@ -475,47 +589,50 @@ function BatchNodeEditor({ mode, value, busy, resources, existingNodes, onChange
         <Field label="批次 UDP idle timeout"><input value={value.settings.udpIdleTimeout} onChange={(event) => setSetting('udpIdleTimeout', event.target.value)} required /></Field>
         <Field label="批次 ULA 政策"><select value={value.settings.ulaOverride} onChange={(event) => setSetting('ulaOverride', event.target.value as ULAOverride)}><option value="inherit">沿用全域</option><option value="allow">允許</option><option value="deny">拒絕</option></select></Field>
       </>}
-    </div>
-    <div className="form-actions"><button className="secondary-button" type="button" onClick={regenerate}>重新產生預覽</button></div>
-    <div className="batch-preview" role="table" aria-label="批次節點預覽">
-      <div className="batch-preview-head" role="row"><span>節點 ID</span><span>顯示名稱</span><span>代理埠</span></div>
-      {value.preview.map((row, index) => <div className="batch-preview-row" role="row" key={index}>
-        <label><span className="sr-only">預覽 {index + 1} 節點 ID</span><input aria-label={`預覽 ${index + 1} 節點 ID`} value={row.id} onChange={(event) => updatePreview(index, 'id', event.target.value)} required /></label>
-        <label><span className="sr-only">預覽 {index + 1} 顯示名稱</span><input aria-label={`預覽 ${index + 1} 顯示名稱`} value={row.name} onChange={(event) => updatePreview(index, 'name', event.target.value)} required /></label>
-        <label><span className="sr-only">預覽 {index + 1} 代理埠</span><input aria-label={`預覽 ${index + 1} 代理埠`} type="number" min="0" max="65535" value={row.port} onChange={(event) => updatePreview(index, 'port', event.target.value)} required /></label>
-      </div>)}
-    </div>
-    <div className="form-actions"><button className="primary-button" type="submit" disabled={busy || !value.folder.trim() || value.preview.length === 0 || (value.settings.authentication === 'none' && !value.settings.confirmUnauthenticated)}>建立 {value.preview.length} 個節點</button><button className="secondary-button" type="button" onClick={onCancel}>取消</button></div>
+    </div>}
+    {step === 1 && <div className="step-panel">
+      <div className="step-toolbar"><p>逐列確認節點ID、顯示名稱與代理埠。</p><button className="secondary-button" type="button" onClick={() => onChange(regenerateBatchPreview(value, existingNodes))}>重新產生預覽</button></div>
+      <div className="batch-preview" role="table" aria-label="批次節點預覽">
+        <div className="batch-preview-head" role="row"><span>節點 ID</span><span>顯示名稱</span><span>代理埠</span></div>
+        {value.preview.map((row, index) => <div className="batch-preview-row" role="row" key={index}>
+          <label><span className="sr-only">預覽 {index + 1} 節點 ID</span><input data-autofocus={index === 0 ? true : undefined} aria-label={`預覽 ${index + 1} 節點 ID`} value={row.id} onChange={(event) => updatePreview(index, 'id', event.target.value)} required /></label>
+          <label><span className="sr-only">預覽 {index + 1} 顯示名稱</span><input aria-label={`預覽 ${index + 1} 顯示名稱`} value={row.name} onChange={(event) => updatePreview(index, 'name', event.target.value)} required /></label>
+          <label><span className="sr-only">預覽 {index + 1} 代理埠</span><input aria-label={`預覽 ${index + 1} 代理埠`} type="number" min="0" max="65535" value={row.port} onChange={(event) => updatePreview(index, 'port', event.target.value)} required /></label>
+        </div>)}
+      </div>
+    </div>}
+    {step === 2 && <div className="batch-summary step-panel">
+      <dl><div><dt>資料夾</dt><dd>{value.folder}</dd></div><div><dt>節點數量</dt><dd>{value.preview.length}</dd></div><div><dt>協定</dt><dd>{value.settings.protocol.toUpperCase()}</dd></div><div><dt>認證</dt><dd>{value.settings.authentication === 'credentials' ? '各自產生安全帳密' : '無認證'}</dd></div><div><dt>入站</dt><dd>{inboundLabel(value.settings.inboundMode)}{value.settings.inboundResource ? ` · ${value.settings.inboundResource}` : ''}</dd></div><div><dt>出站</dt><dd>{value.settings.outbound}</dd></div></dl>
+      <p className="warning-note">確認後將以單一交易建立並啟動全部節點；任一項失敗會回滾整批。</p>
+    </div>}
   </form>
 }
 
-function NodeEditor({ mode, form, editing, busy, resources, folders, onChange, onSubmit, onCancel }: {
+function NodeEditor({ id, mode, form, editing, resources, folders, onChange, onSubmit }: {
+  id: string
   mode: PanelMode
   form: NodeFormState
   editing: boolean
-  busy: boolean
   resources: ResourceSnapshot
   folders: string[]
   onChange: (value: NodeFormState) => void
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
-  onCancel: () => void
 }) {
   const set = <K extends keyof NodeFormState>(key: K, value: NodeFormState[K]) => onChange({ ...form, [key]: value })
   const inboundResources = [...resources.fixed.map((item) => item.name), ...resources.pools.filter((item) => item.kind === 'inbound').map((item) => item.name)]
   const outboundResources = [...resources.fixed.map((item) => item.name), ...resources.pools.filter((item) => item.kind !== 'inbound').map((item) => item.name)]
   return (
-    <form className="editor-panel" onSubmit={onSubmit}>
-      <div className="section-heading"><h2>{editing ? '編輯節點' : '新增節點'}</h2><IconButton label="關閉節點表單" icon={X} onClick={onCancel} /></div>
+    <form id={id} className="modal-form" onSubmit={onSubmit}>
       <div className="form-grid">
-        <Field label="節點 ID"><input value={form.id} onChange={(event) => set('id', event.target.value)} disabled={editing} required /></Field>
-        <Field label="顯示名稱"><input value={form.name} onChange={(event) => set('name', event.target.value)} required /></Field>
+        <Field label="節點 ID"><input data-autofocus={!editing ? true : undefined} value={form.id} onChange={(event) => set('id', event.target.value)} disabled={editing} required /></Field>
+        <Field label="顯示名稱"><input data-autofocus={editing ? true : undefined} value={form.name} onChange={(event) => set('name', event.target.value)} required /></Field>
         <Field label="資料夾"><select value={form.folder} onChange={(event) => set('folder', event.target.value)}><option value="">未分類</option>{folders.map((folder) => <option value={folder} key={folder}>{folder}</option>)}</select></Field>
         <Field label="協定"><select value={form.protocol} onChange={(event) => set('protocol', event.target.value as NodeProtocol)}><option value="mixed">SOCKS + HTTP</option><option value="socks">SOCKS5</option><option value="http">HTTP</option></select></Field>
         <Field label="代理認證"><select value={form.authentication} onChange={(event) => set('authentication', event.target.value as 'credentials' | 'none')}><option value="credentials">帳號密碼</option><option value="none">無認證</option></select></Field>
         {form.authentication === 'credentials' ? <>
           <Field label="代理帳號"><input value={form.username} onChange={(event) => set('username', event.target.value)} placeholder="留空自動生成" autoComplete="off" /></Field>
           <Field label="代理密碼"><input value={form.password} onChange={(event) => set('password', event.target.value)} placeholder="留空自動生成" autoComplete="new-password" /></Field>
-        </> : <div className="risk-field" role="alert"><span>無認證可能使此節點成為公開代理。</span><label><input type="checkbox" checked={form.confirmUnauthenticated} onChange={(event) => set('confirmUnauthenticated', event.target.checked)} />我確認承擔公開代理風險</label></div>}
+        </> : <div className="risk-field" role="alert"><span>無認證可能使此節點成為公開代理。</span><CheckboxField checked={form.confirmUnauthenticated} onChange={(checked) => set('confirmUnauthenticated', checked)}>我確認承擔公開代理風險</CheckboxField></div>}
         <Field label="出站資源"><select value={form.outbound} onChange={(event) => set('outbound', event.target.value)} required><option value="">請選擇</option>{outboundResources.map((name) => <option key={name} value={name}>{name}</option>)}</select></Field>
         <Field label="代理埠"><input type="number" min="0" max="65535" value={form.port} onChange={(event) => set('port', event.target.value)} required /></Field>
         <Field label="入站位址族"><select value={form.inboundMode} onChange={(event) => set('inboundMode', event.target.value as InboundMode)}><option value="ipv6">僅 IPv6</option><option value="ipv4">僅 IPv4</option><option value="dual">雙棧</option></select></Field>
@@ -530,7 +647,6 @@ function NodeEditor({ mode, form, editing, busy, resources, folders, onChange, o
           <Field label="ULA 政策"><select value={form.ulaOverride} onChange={(event) => set('ulaOverride', event.target.value as ULAOverride)}><option value="inherit">沿用全域</option><option value="allow">允許</option><option value="deny">拒絕</option></select></Field>
         </>}
       </div>
-      <div className="form-actions"><button className="primary-button" type="submit" disabled={busy || (form.authentication === 'none' && !form.confirmUnauthenticated)}>{editing ? '儲存並切換' : '建立並啟動'}</button><button className="secondary-button" type="button" onClick={onCancel}>取消</button></div>
     </form>
   )
 }
@@ -581,6 +697,15 @@ function defaultBatch(resources: ResourceSnapshot, nodes: NodeRecord[]): BatchFo
     count: '5',
     settings: { ...settings, id: '', name: '', folder: '', username: '', password: '' },
     preview,
+  }
+}
+
+function regenerateBatchPreview(value: BatchFormState, nodes: NodeRecord[]): BatchFormState {
+  const count = Math.min(100, Math.max(1, Number.parseInt(value.count, 10) || 1))
+  return {
+    ...value,
+    count: String(count),
+    preview: nextNodeIdentities(nodes, count).map((identity) => ({ ...identity, port: '0' })),
   }
 }
 

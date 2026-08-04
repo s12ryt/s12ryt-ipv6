@@ -53,17 +53,22 @@ describe('NodesView', () => {
     render(<NodesView mode="advanced" client={{ mutate } as Pick<ApiClient, 'mutate'>} nodes={[]} resources={resources} onChange={onChange} />)
 
     await user.click(screen.getByRole('button', { name: '一鍵建立多節點' }))
+    expect(screen.getByRole('dialog', { name: '一鍵建立多節點' })).toBeInTheDocument()
+    expect(screen.getByText('步驟 1 / 3')).toBeInTheDocument()
     expect(screen.getByLabelText('資料夾名稱')).toHaveValue('批次 1')
     expect(screen.getByLabelText('節點數量')).toHaveValue(5)
     await user.clear(screen.getByLabelText('節點數量'))
     await user.type(screen.getByLabelText('節點數量'), '2')
-    await user.click(screen.getByRole('button', { name: '重新產生預覽' }))
+    await user.selectOptions(screen.getByLabelText('批次出站資源'), 'shared-main')
+    await user.selectOptions(screen.getByLabelText('批次 IPv6 入站資源'), 'inbound-main')
+    await user.click(screen.getByRole('button', { name: '下一步：預覽' }))
+    expect(screen.getByText('步驟 2 / 3')).toBeInTheDocument()
     expect(screen.getByLabelText('預覽 1 節點 ID')).toHaveValue('node-001')
     expect(screen.getByLabelText('預覽 2 顯示名稱')).toHaveValue('節點 2')
     expect(screen.getByLabelText('預覽 2 代理埠')).toHaveValue(0)
 
-    await user.selectOptions(screen.getByLabelText('批次出站資源'), 'shared-main')
-    await user.selectOptions(screen.getByLabelText('批次 IPv6 入站資源'), 'inbound-main')
+    await user.click(screen.getByRole('button', { name: '下一步：確認' }))
+    expect(screen.getByText('步驟 3 / 3')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '建立 2 個節點' }))
 
     await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1))
@@ -109,6 +114,7 @@ describe('NodesView', () => {
     await user.click(within(folder).getByRole('button', { name: '展開 批次 1' }))
 
     await user.click(within(folder).getByRole('button', { name: '重新命名 批次 1' }))
+    expect(screen.getByRole('dialog', { name: '重新命名資料夾 批次 1' })).toBeInTheDocument()
     await user.clear(screen.getByLabelText('資料夾新名稱'))
     await user.type(screen.getByLabelText('資料夾新名稱'), '東京群組')
     await user.click(screen.getByRole('button', { name: '確認重新命名' }))
@@ -116,7 +122,10 @@ describe('NodesView', () => {
     expect(onChange).toHaveBeenCalledWith([...renamedByID, members[2]])
 
     view.rerender(<NodesView mode="advanced" client={{ mutate } as Pick<ApiClient, 'mutate'>} nodes={[...renamedByID, members[2]]} resources={resources} onChange={onChange} />)
-    await user.selectOptions(screen.getByLabelText('移動 loose 至資料夾'), '東京群組')
+    await user.click(screen.getByRole('button', { name: '移動 loose' }))
+    expect(screen.getByRole('dialog', { name: '移動節點 loose' })).toBeInTheDocument()
+    await user.selectOptions(screen.getByLabelText('目標資料夾'), '東京群組')
+    await user.click(screen.getByRole('button', { name: '確認移動' }))
     await waitFor(() => expect(mutate).toHaveBeenCalledWith('/api/nodes/loose/folder', 'PUT', { folder: '東京群組' }))
     expect(onChange).toHaveBeenCalledWith([...renamedByID, moved])
   })
@@ -138,6 +147,9 @@ describe('NodesView', () => {
     await user.click(within(folder).getByRole('button', { name: '複製 批次 1 全部帳密' }))
     expect(writeText).toHaveBeenCalledWith('edge-1\tproxy-user:proxy-password-value\nedge-2\tsecond-user:second-password')
     await user.click(within(folder).getByRole('button', { name: '全部停止 批次 1' }))
+    expect(mutate).not.toHaveBeenCalled()
+    const stopDialog = screen.getByRole('dialog', { name: '停止 批次 1 全部節點' })
+    await user.click(within(stopDialog).getByRole('button', { name: '確認全部停止' }))
     await waitFor(() => expect(mutate).toHaveBeenCalledWith('/api/node-folders/action', 'POST', { folder: '批次 1', action: 'stop' }))
     expect(onChange).toHaveBeenCalledWith([
       { ...members[0], status: 'stopped' },
@@ -146,7 +158,7 @@ describe('NodesView', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('edge-2：node operation failed')
 
     await user.click(within(folder).getByRole('button', { name: '刪除資料夾 批次 1' }))
-    expect(within(folder).getByText(/將逐一刪除資料夾內全部節點/)).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: '刪除資料夾 批次 1' })).toHaveTextContent('將逐一刪除資料夾內全部節點')
     expect(mutate).toHaveBeenCalledTimes(1)
   })
 
@@ -167,6 +179,8 @@ describe('NodesView', () => {
     expect(writeText).toHaveBeenCalledWith('proxy-user:proxy-password-value')
 
     await user.click(screen.getByRole('button', { name: '停止 edge-1' }))
+    expect(mutate).not.toHaveBeenCalled()
+    await user.click(within(screen.getByRole('dialog', { name: '停止節點 edge-1' })).getByRole('button', { name: '確認停止' }))
     await waitFor(() => expect(mutate).toHaveBeenCalledWith('/api/nodes/edge-1/stop', 'POST', {}))
     expect(onChange).toHaveBeenCalledWith([stopped])
   })
@@ -211,7 +225,7 @@ describe('NodesView', () => {
       'socks5://proxy-user:proxy-password-value@[2001:4860::20]:52000',
       'http://proxy-user:proxy-password-value@[2001:4860::20]:52000',
     ].join('\n'))
-    await user.click(within(dialog).getByRole('button', { name: '關閉手動複製' }))
+    await user.click(within(dialog).getByRole('button', { name: '完成' }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
@@ -229,6 +243,7 @@ describe('NodesView', () => {
     render(<NodesView mode="advanced" client={{ mutate } as Pick<ApiClient, 'mutate'>} nodes={[]} resources={resources} onChange={onChange} />)
 
     await user.click(screen.getByRole('button', { name: '新增節點' }))
+	expect(screen.getByRole('dialog', { name: '新增節點' })).toBeInTheDocument()
 	expect(screen.getByLabelText('節點 ID')).toHaveValue('node-001')
 	expect(screen.getByLabelText('顯示名稱')).toHaveValue('節點 1')
 	await user.clear(screen.getByLabelText('節點 ID'))
@@ -268,12 +283,14 @@ describe('NodesView', () => {
     expect(screen.getByText(/無認證可能使此節點成為公開代理/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '建立並啟動' })).toBeDisabled()
 
-    const nodeForm = screen.getByRole('heading', { name: '新增節點' }).closest('form')
+    const nodeForm = screen.getByRole('dialog', { name: '新增節點' })
     expect(nodeForm).not.toBeNull()
-    await user.click(within(nodeForm as HTMLFormElement).getByRole('button', { name: '取消' }))
+    await user.click(within(nodeForm).getByRole('button', { name: '取消' }))
+    await user.click(screen.getByRole('button', { name: '放棄變更' }))
     await user.click(screen.getByRole('button', { name: '刪除 edge-1' }))
-    expect(screen.getByText(/刪除會立即中止所有連線/)).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '確認刪除 edge-1' }))
+    const deleteDialog = screen.getByRole('dialog', { name: '刪除節點 edge-1' })
+    expect(deleteDialog).toHaveTextContent('刪除會立即中止所有連線')
+    await user.click(within(deleteDialog).getByRole('button', { name: '確認刪除' }))
     await waitFor(() => expect(mutate).toHaveBeenCalledWith('/api/nodes/edge-1', 'DELETE', {}))
     expect(onChange).toHaveBeenCalledWith([])
   })
@@ -334,7 +351,7 @@ describe('NodesView', () => {
     await user.click(screen.getByRole('button', { name: '一鍵建立多節點' }))
     await user.clear(screen.getByLabelText('節點數量'))
     await user.type(screen.getByLabelText('節點數量'), '2')
-    await user.click(screen.getByRole('button', { name: '重新產生預覽' }))
+    await user.click(screen.getByRole('button', { name: '下一步：預覽' }))
     await user.clear(screen.getByLabelText('預覽 1 顯示名稱'))
     await user.type(screen.getByLabelText('預覽 1 顯示名稱'), '尚未送出的批次節點')
     expect(screen.queryByLabelText('批次 TCP 上限')).not.toBeInTheDocument()
@@ -342,6 +359,7 @@ describe('NodesView', () => {
     view.rerender(<NodesView mode="advanced" client={{ mutate: vi.fn() } as Pick<ApiClient, 'mutate'>} nodes={[]} resources={resources} onChange={vi.fn()} />)
 
     expect(screen.getByLabelText('預覽 1 顯示名稱')).toHaveValue('尚未送出的批次節點')
+    await user.click(screen.getByRole('button', { name: '上一步' }))
     expect(screen.getByLabelText('批次 TCP 上限')).toHaveValue(4096)
   })
 
@@ -352,9 +370,9 @@ describe('NodesView', () => {
     await user.click(screen.getByRole('button', { name: '一鍵建立多節點' }))
     await user.selectOptions(screen.getByLabelText('批次代理認證'), 'none')
     expect(screen.getByText(/整批節點將不使用認證/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '建立 5 個節點' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '下一步：預覽' })).toBeDisabled()
 
     await user.click(screen.getByLabelText('我確認整批公開代理風險'))
-    expect(screen.getByRole('button', { name: '建立 5 個節點' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '下一步：預覽' })).toBeEnabled()
   })
 })
