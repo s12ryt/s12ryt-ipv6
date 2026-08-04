@@ -10,6 +10,8 @@ import {
   Monitor,
   Moon,
   Network,
+  PanelLeftClose,
+  PanelLeftOpen,
   ShieldAlert,
   Sun,
 } from 'lucide-react'
@@ -43,6 +45,10 @@ function applyTheme(theme: Theme) {
   else document.documentElement.dataset.theme = theme
 }
 
+function storedSidebarCollapsed() {
+  return localStorage.getItem('s12ryt_sidebar_collapsed') === 'true'
+}
+
 export function App() {
   const client = useMemo(() => new ApiClient(), [])
   const [phase, setPhase] = useState<AppPhase>('checking')
@@ -50,11 +56,13 @@ export function App() {
   const [view, setView] = useState<View>('overview')
   const [theme, setTheme] = useState<Theme>(storedTheme)
   const [panelMode, setPanelMode] = useState<PanelMode>(storedPanelMode)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(storedSidebarCollapsed)
   const [error, setError] = useState('')
   const [logRevision, setLogRevision] = useState(0)
 
   useEffect(() => applyTheme(theme), [theme])
   useEffect(() => persistPanelMode(panelMode), [panelMode])
+  useEffect(() => localStorage.setItem('s12ryt_sidebar_collapsed', String(sidebarCollapsed)), [sidebarCollapsed])
 
   useEffect(() => {
     let active = true
@@ -161,7 +169,7 @@ export function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
       <HTTPWarning />
       <header className="topbar">
         <div className="brand-lockup">
@@ -193,6 +201,16 @@ export function App() {
             )
           })}
         </nav>
+        <button
+          className="sidebar-toggle"
+          type="button"
+          aria-label={sidebarCollapsed ? '展開側欄' : '收合側欄'}
+          title={sidebarCollapsed ? '展開側欄' : '收合側欄'}
+          onClick={() => setSidebarCollapsed((current) => !current)}
+        >
+          {sidebarCollapsed ? <PanelLeftOpen size={17} aria-hidden="true" /> : <PanelLeftClose size={17} aria-hidden="true" />}
+          <span>{sidebarCollapsed ? '展開側欄' : '收合側欄'}</span>
+        </button>
       </aside>
       <main className="workspace">
         {error && <div className="inline-error" role="alert">{error}</div>}

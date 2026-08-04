@@ -189,6 +189,25 @@ describe('App', () => {
     expect(localStorage.getItem('s12ryt_theme')).toBe('light')
   })
 
+  it('collapses the desktop sidebar and restores the browser preference', async () => {
+    const user = userEvent.setup()
+    installFetch(true)
+    const rendered = render(<App />)
+
+    await screen.findByRole('heading', { name: '總覽' })
+    const shell = document.querySelector('.app-shell')
+    expect(shell).not.toHaveClass('sidebar-collapsed')
+    await user.click(screen.getByRole('button', { name: '收合側欄' }))
+    expect(shell).toHaveClass('sidebar-collapsed')
+    expect(localStorage.getItem('s12ryt_sidebar_collapsed')).toBe('true')
+    expect(screen.getByRole('button', { name: '展開側欄' })).toBeInTheDocument()
+
+    rendered.unmount()
+    render(<App />)
+    await screen.findByRole('heading', { name: '總覽' })
+    expect(document.querySelector('.app-shell')).toHaveClass('sidebar-collapsed')
+  })
+
   it('defaults to basic mode, persists mode changes, and keeps an open form intact', async () => {
     const user = userEvent.setup()
     const fetchMock = installFetch(true)
