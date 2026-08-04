@@ -1,10 +1,12 @@
 import { FormEvent, useEffect, useState } from 'react'
 import { KeyRound, Play, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
 import { APIError, ApiClient, ConnectivityCheck, Overview, ResolverConfig } from './api'
+import type { PanelMode } from './panelMode'
 
 type NetworkClient = Pick<ApiClient, 'mutate'>
 
-export function NetworkView({ client, overview, onChange, onPasswordChanged }: {
+export function NetworkView({ mode, client, overview, onChange, onPasswordChanged }: {
+  mode: PanelMode
   client: NetworkClient
   overview: Overview
   onChange: (overview: Overview) => void
@@ -63,13 +65,13 @@ export function NetworkView({ client, overview, onChange, onPasswordChanged }: {
             <div><dt>最近檢查</dt><dd>{formatTime(overview.nat64.last_checked)}</dd></div>
           </dl>
           {overview.nat64.conflict && <p className="warning-note">探測結果互相衝突，目前採用優先 Resolver 的結果。</p>}
-          <form className="inline-form" onSubmit={(event) => { event.preventDefault(); void updateNAT64(prefix) }}>
+          {mode === 'advanced' && <form className="inline-form" onSubmit={(event) => { event.preventDefault(); void updateNAT64(prefix) }}>
             <label className="field"><span>NAT64 /96 前綴</span><input value={prefix} onChange={(event) => setPrefix(event.target.value)} placeholder="空白使用自動探索" /></label>
             <div className="form-actions">
               <button className="primary-button" type="submit" disabled={busy !== ''}><Save size={16} aria-hidden="true" />套用 NAT64 設定</button>
               <button className="secondary-button" type="button" disabled={busy !== ''} onClick={() => void updateNAT64('')}><RotateCcw size={16} aria-hidden="true" />改用自動探索</button>
             </div>
-          </form>
+          </form>}
         </section>
         <section className="data-section" aria-labelledby="firewall-title">
           <div className="section-heading"><h2 id="firewall-title">防火牆診斷</h2><StatusBadge state={overview.firewall.Degraded ? 'degraded' : 'healthy'} /></div>
@@ -79,7 +81,7 @@ export function NetworkView({ client, overview, onChange, onPasswordChanged }: {
         </section>
       </div>
 
-      <section className="resource-section" aria-labelledby="resolver-title">
+      {mode === 'advanced' ? <section className="resource-section" aria-labelledby="resolver-title">
         <div className="section-heading"><h2 id="resolver-title">IPv6-only DoT Resolver</h2><span className="quiet-count">{resolvers.length} 個</span></div>
         <div className="resolver-list">
           {resolvers.map((resolver, index) => (
@@ -97,7 +99,10 @@ export function NetworkView({ client, overview, onChange, onPasswordChanged }: {
           <button className="secondary-button" type="button" onClick={() => setResolvers((current) => [...current, emptyResolver(current.length + 1)])}><Plus size={16} aria-hidden="true" />新增 Resolver</button>
           <button className="primary-button" type="button" disabled={busy !== '' || resolvers.length === 0 || !resolvers.some((resolver) => resolver.enabled)} onClick={() => void saveResolvers()}><Save size={16} aria-hidden="true" />儲存 Resolver 設定</button>
         </div>
-      </section>
+      </section> : <section className="resource-section" aria-labelledby="resolver-title">
+        <div className="section-heading"><h2 id="resolver-title">IPv6-only DoT Resolver</h2><span className="quiet-count">基礎模式唯讀</span></div>
+        {resolvers.map((resolver) => <div className="line-item" key={`${resolver.name}:${resolver.address}`}><div><strong>{resolver.name}</strong><span className="mono">{resolver.address}</span></div><div><span>{resolver.server_name}:{resolver.port}</span><span>{resolver.enabled ? '已啟用' : '已停用'}</span></div></div>)}
+      </section>}
 
       <section className="resource-section" aria-labelledby="connectivity-title">
         <div className="section-heading"><h2 id="connectivity-title">連通性測試</h2><button className="secondary-button" type="button" disabled={busy !== ''} onClick={() => void testConnectivity()}><Play size={16} aria-hidden="true" />執行連通性測試</button></div>

@@ -32,7 +32,7 @@ describe('NetworkView', () => {
     const mutate = vi.fn().mockResolvedValueOnce(updated).mockResolvedValueOnce(automatic)
     const onChange = vi.fn()
 
-    render(<NetworkView client={{ mutate } as Pick<ApiClient, 'mutate'>} overview={overview} onChange={onChange} onPasswordChanged={vi.fn()} />)
+    render(<NetworkView mode="advanced" client={{ mutate } as Pick<ApiClient, 'mutate'>} overview={overview} onChange={onChange} onPasswordChanged={vi.fn()} />)
 
     expect(screen.getByText('inet filter input policy drop')).toBeInTheDocument()
     expect(screen.getByText(/探測結果互相衝突/)).toBeInTheDocument()
@@ -56,7 +56,7 @@ describe('NetworkView', () => {
     ]
     const mutate = vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce(checks)
     const onChange = vi.fn()
-    render(<NetworkView client={{ mutate } as Pick<ApiClient, 'mutate'>} overview={overview} onChange={onChange} onPasswordChanged={vi.fn()} />)
+    render(<NetworkView mode="advanced" client={{ mutate } as Pick<ApiClient, 'mutate'>} overview={overview} onChange={onChange} onPasswordChanged={vi.fn()} />)
 
     const resolver = screen.getByRole('group', { name: 'Resolver cloudflare-primary' })
     await user.clear(within(resolver).getByLabelText('IPv6 位址'))
@@ -89,7 +89,7 @@ describe('NetworkView', () => {
     const user = userEvent.setup()
     const mutate = vi.fn().mockResolvedValue(undefined)
     const onPasswordChanged = vi.fn()
-    render(<NetworkView client={{ mutate } as Pick<ApiClient, 'mutate'>} overview={overview} onChange={vi.fn()} onPasswordChanged={onPasswordChanged} />)
+    render(<NetworkView mode="advanced" client={{ mutate } as Pick<ApiClient, 'mutate'>} overview={overview} onChange={vi.fn()} onPasswordChanged={onPasswordChanged} />)
 
     const form = screen.getByRole('form', { name: '變更管理員密碼' })
     await user.type(within(form).getByLabelText('目前密碼'), 'current-password-value')
@@ -106,5 +106,16 @@ describe('NetworkView', () => {
       new_password: 'replacement-password',
     }))
     expect(onPasswordChanged).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps diagnostics, connectivity, and password controls but hides network mutation in basic mode', async () => {
+    render(<NetworkView mode="basic" client={{ mutate: vi.fn() } as Pick<ApiClient, 'mutate'>} overview={overview} onChange={vi.fn()} onPasswordChanged={vi.fn()} />)
+
+    expect(screen.getByText('inet filter input policy drop')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '執行連通性測試' })).toBeInTheDocument()
+    expect(screen.getByRole('form', { name: '變更管理員密碼' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('NAT64 /96 前綴')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '儲存 Resolver 設定' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '新增 Resolver' })).not.toBeInTheDocument()
   })
 })
