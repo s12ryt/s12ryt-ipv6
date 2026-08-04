@@ -64,6 +64,24 @@ func (m *PersistentManager) Create(ctx context.Context, config Config, confirmUn
 	return created, nil
 }
 
+func (m *PersistentManager) CreateBatch(ctx context.Context, configs []Config, confirmUnauthenticated bool) ([]Node, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	created, err := m.manager.CreateBatch(ctx, configs, confirmUnauthenticated)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.store.Save(m.manager.State()); err != nil {
+		ids := make([]string, len(created))
+		for index, current := range created {
+			ids[index] = current.Config.ID
+		}
+		rollbackErr := m.manager.rollbackBatch(context.WithoutCancel(ctx), ids)
+		return nil, errors.Join(fmt.Errorf("save node state: %w", err), rollbackErr)
+	}
+	return created, nil
+}
+
 func (m *PersistentManager) Update(ctx context.Context, id string, config Config, confirmUnauthenticated bool) (Node, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -117,6 +135,38 @@ func (m *PersistentManager) Stop(ctx context.Context, id string) (Node, error) {
 		return Node{}, errors.Join(fmt.Errorf("save node state: %w", err), rollbackErr)
 	}
 	return stopped, nil
+}
+
+func (m *PersistentManager) MoveToFolder(ctx context.Context, id, folder string) (Node, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	before, found := m.manager.Get(id)
+	if !found {
+		return Node{}, ErrNodeNotFound
+	}
+	moved, err := m.manager.MoveToFolder(ctx, id, folder)
+	if err != nil {
+		return Node{}, err
+	}
+	if err := m.store.Save(m.manager.State()); err != nil {
+		_, rollbackErr := m.manager.MoveToFolder(context.WithoutCancel(ctx), id, before.Config.Folder)
+		return Node{}, errors.Join(fmt.Errorf("save node state: %w", err), rollbackErr)
+	}
+	return moved, nil
+}
+
+func (m *PersistentManager) RenameFolder(ctx context.Context, source, target string) ([]Node, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	renamed, err := m.manager.RenameFolder(ctx, source, target)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.store.Save(m.manager.State()); err != nil {
+		_, rollbackErr := m.manager.RenameFolder(context.WithoutCancel(ctx), target, source)
+		return nil, errors.Join(fmt.Errorf("save node state: %w", err), rollbackErr)
+	}
+	return renamed, nil
 }
 
 func (m *PersistentManager) Delete(ctx context.Context, id string) error {

@@ -70,6 +70,74 @@ func TestPersistentManagerRollsBackCreateWhenSaveFails(t *testing.T) {
 	}
 }
 
+func TestPersistentManagerCreateBatchPersistsOnce(t *testing.T) {
+	factory := newFakeRuntimeFactory()
+	manager, _ := NewManager(factory, nil, 10)
+	store := &memoryNodeStateStore{}
+	service, _ := NewPersistentManager(manager, store)
+	configs := []Config{validConfig("node-1", "first"), validConfig("node-2", "second")}
+	for index := range configs {
+		configs[index].Folder = "批次 1"
+	}
+
+	created, err := service.CreateBatch(context.Background(), configs, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 2 || len(store.saves) != 1 || len(store.state.Nodes) != 2 {
+		t.Fatalf("created = %#v, saves = %#v", created, store.saves)
+	}
+}
+
+func TestPersistentManagerCreateBatchRollsBackWhenSaveFails(t *testing.T) {
+	factory := newFakeRuntimeFactory()
+	manager, _ := NewManager(factory, nil, 10)
+	store := &memoryNodeStateStore{saveErr: errors.New("disk full")}
+	service, _ := NewPersistentManager(manager, store)
+	configs := []Config{validConfig("node-1", "first"), validConfig("node-2", "second")}
+	for index := range configs {
+		configs[index].Folder = "批次 1"
+	}
+
+	if _, err := service.CreateBatch(context.Background(), configs, false); err == nil {
+		t.Fatal("CreateBatch() error = nil")
+	}
+	if len(service.List()) != 0 || len(store.saves) != 1 {
+		t.Fatalf("nodes = %#v, saves = %#v", service.List(), store.saves)
+	}
+	if factory.runtimes["node-1"][0].stopCount() != 1 || factory.runtimes["node-2"][0].stopCount() != 1 {
+		t.Fatalf("batch runtimes were not stopped: %#v", factory.operations())
+	}
+}
+
+func TestPersistentManagerRollsBackFolderChangesWhenSaveFails(t *testing.T) {
+	manager, _ := NewManager(newFakeRuntimeFactory(), nil, 10)
+	for _, id := range []string{"node-1", "node-2"} {
+		config := validConfig(id, id)
+		config.Folder = "來源"
+		if _, err := manager.Create(context.Background(), config, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := &memoryNodeStateStore{saveErr: errors.New("disk full")}
+	service, _ := NewPersistentManager(manager, store)
+
+	if _, err := service.MoveToFolder(context.Background(), "node-1", "目標"); err == nil {
+		t.Fatal("MoveToFolder() error = nil")
+	}
+	if current, _ := service.Get("node-1"); current.Config.Folder != "來源" {
+		t.Fatalf("folder after move rollback = %q", current.Config.Folder)
+	}
+	if _, err := service.RenameFolder(context.Background(), "來源", "新名稱"); err == nil {
+		t.Fatal("RenameFolder() error = nil")
+	}
+	for _, current := range service.List() {
+		if current.Config.Folder != "來源" {
+			t.Fatalf("folder after rename rollback = %#v", service.List())
+		}
+	}
+}
+
 func TestPersistentManagerRollsBackStartWhenSaveFails(t *testing.T) {
 	factory := newFakeRuntimeFactory()
 	manager, _ := NewManager(factory, nil, 3)
