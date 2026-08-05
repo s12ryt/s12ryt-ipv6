@@ -197,3 +197,11 @@ sudo ip netns del s12ryt-test
 ```
 
 不要直接在生產宿主 namespace 執行 integration 測試。
+
+## 授權
+
+Copyright (C) s12ryt
+
+本專案以 [GNU Affero General Public License v3 或任何後續版本](LICENSE) 授權，SPDX 識別碼為 `AGPL-3.0-or-later`。
+
+你可以依授權條款使用、修改與散布本專案。若修改版本透過網路提供服務，必須依 GNU AGPL 第 13 條向該服務的使用者提供對應原始碼。第三方相依套件仍適用各自的授權條款。
