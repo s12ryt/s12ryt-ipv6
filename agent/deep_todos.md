@@ -82,3 +82,4 @@
 - [x] 將 `LICENSE` 納入後續 GoReleaser 壓縮檔並保留第三方相依套件各自授權。
 - [x] 執行 Release 契約、Go／前端完整回歸、lint、vet、build 與 GoReleaser v2 組態驗證。
 - [x] 完成品質審查及治理紀錄更新。
+- [x] 以五筆原子提交完成紀錄收尾並一般推送至 `origin/main`，確認本機、追蹤分支與 GitHub 遠端 SHA 一致。

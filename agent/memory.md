@@ -106,3 +106,4 @@
 - TDD RED：擴充 `deploy/release_test.sh` 後，測試因缺少根 `LICENSE` 如預期失敗並輸出 `FAIL: GNU AGPL license file is missing`。GREEN：新增 GNU AGPL v3 標準全文、README 授權與網路服務原始碼義務說明、`web/package.json`／lockfile 根套件 SPDX，並將 `LICENSE` 加入 GoReleaser archive files；同一契約測試通過。
 - 完整驗證：前端 13 個 test files／63 項測試、ESLint、TypeScript與Vite production build、web embed test、Go全部套件測試與 `go vet`、shell語法、installer/release契約測試均通過。系統未安裝獨立 `goreleaser`，改以 `go run github.com/goreleaser/goreleaser/v2@v2.17.1 check` 驗證，使用自動下載的 Go 1.26.5 toolchain確認1份組態有效。
 - 品質審查確認 LICENSE 含完整第0至17條、第13條遠端網路互動義務、第14條後續版本選項、免責與附錄；前端build沒有造成額外追蹤檔變更。未執行既有Release重發或真實GitHub Actions發布，符合已確認範圍。
+- 授權核心、Web SPDX、Release封裝與治理紀錄分別提交為 `79bd31e`、`d611785`、`6b3f8e1`、`60f10ff`；透過現有 GitHub CLI 憑證的一次性 WSL credential helper 一般推送至 `origin/main`，未寫入 Git 設定。推送後本機 `HEAD`、`origin/main` 與 GitHub 遠端均為 `60f10ff8357cb3aabd2ace3cd3a31657c91e2a7e`，工作樹乾淨。
