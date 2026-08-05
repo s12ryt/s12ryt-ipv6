@@ -72,3 +72,13 @@
 - [x] 實作原生CSS動畫與`prefers-reduced-motion`降級。
 - [x] 執行完整前端回歸、lint、build與Playwright多尺寸／鍵盤驗收。
 - [x] 完成品質審查並更新治理紀錄。
+
+## 2026-08-05：AGPL 開源授權
+
+- [x] 確認遠端公開倉庫原先沒有授權檔或授權聲明。
+- [x] 完成 `AGPL-3.0-or-later`、著作權署名、同步範圍與既有 Release 邊界澄清。
+- [x] 以 RED 契約測試證明根目錄缺少 GNU AGPL 授權檔。
+- [x] 新增 GNU AGPL v3 全文並同步 README 與 npm SPDX 中繼資料。
+- [x] 將 `LICENSE` 納入後續 GoReleaser 壓縮檔並保留第三方相依套件各自授權。
+- [x] 執行 Release 契約、Go／前端完整回歸、lint、vet、build 與 GoReleaser v2 組態驗證。
+- [x] 完成品質審查及治理紀錄更新。

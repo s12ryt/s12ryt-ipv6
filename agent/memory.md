@@ -98,3 +98,11 @@
 - 節點單筆與批次、資料夾、IPv6資源、NAT64、Resolver、管理密碼、統計歸零及日誌清除等寫入操作皆遷移至modal。批次節點採共用設定、逐列預覽、最終確認三步；返回及基礎／進階切換均保留表單與預覽。所有modal具固定header/footer及獨立捲動body，手機使用近全屏版面。
 - CSS加入160至220ms的modal/backdrop、頁面、側欄、收合、步驟與回饋動畫，沒有hover scale或layout shift；`prefers-reduced-motion`下計算後動畫與transition降至0.01ms。
 - 本輪驗證：前端13個test files／63項測試、ESLint、TypeScript與Vite production build全部通過，LSP對核心modal與日誌元件無診斷。Playwright以去敏API mock驗證側欄偏好、focus trap、髒表單巢狀確認、鍵盤Esc返回、375px手機全屏modal，以及桌面代表性wide／medium／confirm modal；五頁在375px無document、workspace或警告列水平溢出，console為0 errors。瀏覽器、Vite程序、截圖與臨時檔均已清理。
+
+## 2026-08-05
+
+- 檢查本機 `origin` 與 GitHub 遠端 `s12ryt/s12ryt-ipv6`：倉庫原先沒有 `LICENSE`／`COPYING`、README 授權章節、SPDX 中繼資料或其他授權聲明，因此公開可見但尚未授予開源使用權。
+- 使用者確認自本次 `main` 與後續版本採 `AGPL-3.0-or-later`，著作權聲明為不列年份的 `Copyright (C) s12ryt`；不加入逐檔標頭、不修改或重發既有 `v0.1.2` Release，第三方相依套件維持各自授權。
+- TDD RED：擴充 `deploy/release_test.sh` 後，測試因缺少根 `LICENSE` 如預期失敗並輸出 `FAIL: GNU AGPL license file is missing`。GREEN：新增 GNU AGPL v3 標準全文、README 授權與網路服務原始碼義務說明、`web/package.json`／lockfile 根套件 SPDX，並將 `LICENSE` 加入 GoReleaser archive files；同一契約測試通過。
+- 完整驗證：前端 13 個 test files／63 項測試、ESLint、TypeScript與Vite production build、web embed test、Go全部套件測試與 `go vet`、shell語法、installer/release契約測試均通過。系統未安裝獨立 `goreleaser`，改以 `go run github.com/goreleaser/goreleaser/v2@v2.17.1 check` 驗證，使用自動下載的 Go 1.26.5 toolchain確認1份組態有效。
+- 品質審查確認 LICENSE 含完整第0至17條、第13條遠端網路互動義務、第14條後續版本選項、免責與附錄；前端build沒有造成額外追蹤檔變更。未執行既有Release重發或真實GitHub Actions發布，符合已確認範圍。

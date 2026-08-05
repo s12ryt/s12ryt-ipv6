@@ -1,6 +1,6 @@
 # s12ryt-ipv6 首版需求與驗收契約
 
-更新日期：2026-08-03
+更新日期：2026-08-05
 狀態：使用者已確認，作為首版實作與驗收的唯一依據。
 
 ## 1. 產品範圍
@@ -251,3 +251,13 @@
 - 動畫使用原生CSS，不增加動畫runtime。modal、backdrop、側欄收合、頁面切換、資料夾收合、步驟切換及成功／錯誤回饋使用160至220ms的opacity／transform／color動畫，不用會造成layout shift的scale hover。
 - `prefers-reduced-motion: reduce`時移除非必要位移與轉場，功能與focus順序不得依賴動畫完成。
 - 驗收需以React元件測試覆蓋modal外部點擊、Esc、髒表單巢狀確認、focus trap／restore、背景鎖定、批次步驟保存、所有寫入操作modal化、自定義checkbox及側欄偏好；CSS契約測試覆蓋動畫與reduced-motion；最後執行完整前端test、lint、build及Playwright 375／768／1024／1440、亮／暗、鍵盤與無水平溢出驗收。
+
+## 23. AGPL 開源授權
+
+- 專案採 GNU Affero General Public License v3 或任何後續版本，SPDX 識別碼為 `AGPL-3.0-or-later`。
+- 著作權署名使用 `s12ryt`，不另列年份。
+- 根目錄新增標準 GNU AGPL v3 全文 `LICENSE`；README 新增授權章節，清楚標示 SPDX 識別碼、著作權人及網路服務散布原始碼義務。
+- `web/package.json` 與 lockfile 根套件中繼資料同步宣告 `AGPL-3.0-or-later`；第三方相依套件維持各自授權，不改寫其授權欄位。
+- GoReleaser 的後續 `tar.gz` 發布封裝必須包含根 `LICENSE`；裸 binary 與 checksum 發布形式維持不變。
+- 不加入全專案逐檔授權標頭，不修改、刪除或重發既有 `v0.1.2` Release；授權變更自本次 `main` 提交及其後版本生效。
+- 驗收需以發布契約測試證明 `LICENSE`、README 與 npm SPDX 宣告一致，並以 GoReleaser 設定檢查證明封裝有效；完成後建立原子提交並以一般 push 推送 `origin/main`，不得改寫歷史或強制推送。
