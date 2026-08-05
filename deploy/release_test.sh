@@ -5,6 +5,9 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 CONFIG="$ROOT/.goreleaser.yaml"
 WORKFLOW="$ROOT/.github/workflows/release.yml"
 README="$ROOT/README.md"
+LICENSE="$ROOT/LICENSE"
+PACKAGE_JSON="$ROOT/web/package.json"
+PACKAGE_LOCK="$ROOT/web/package-lock.json"
 
 fail() {
     echo "FAIL: $*" >&2
@@ -14,6 +17,21 @@ fail() {
 [ -f "$CONFIG" ] || fail ".goreleaser.yaml is missing"
 [ -f "$WORKFLOW" ] || fail "release workflow is missing"
 [ -f "$README" ] || fail "README.md is missing"
+[ -f "$LICENSE" ] || fail "GNU AGPL license file is missing"
+[ -f "$PACKAGE_JSON" ] || fail "web/package.json is missing"
+[ -f "$PACKAGE_LOCK" ] || fail "web/package-lock.json is missing"
+
+grep -Fq 'GNU AFFERO GENERAL PUBLIC LICENSE' "$LICENSE" || fail "LICENSE is not GNU AGPL"
+grep -Fq 'Version 3, 19 November 2007' "$LICENSE" || fail "LICENSE is not GNU AGPL v3"
+grep -Fq 'AGPL-3.0-or-later' "$README" || fail "README lacks the AGPL SPDX identifier"
+grep -Fq 'Copyright (C) s12ryt' "$README" || fail "README lacks the project copyright notice"
+node -e '
+const fs = require("node:fs");
+const packageJson = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const packageLock = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+if (packageJson.license !== "AGPL-3.0-or-later") process.exit(1);
+if (packageLock.packages?.[""]?.license !== "AGPL-3.0-or-later") process.exit(1);
+' "$PACKAGE_JSON" "$PACKAGE_LOCK" || fail "web package metadata lacks AGPL-3.0-or-later"
 
 grep -Eq '^version:[[:space:]]*2$' "$CONFIG" || fail "GoReleaser v2 config is required"
 grep -Fq 'main: ./cmd/s12ryt-ipv6' "$CONFIG" || fail "release build does not target the service CLI"
@@ -24,6 +42,7 @@ grep -Fq -- '- tar.gz' "$CONFIG" || fail "tar.gz release format is missing"
 grep -Fq -- '- binary' "$CONFIG" || fail "raw binary release format is missing"
 grep -Fq 'name_template: checksums.txt' "$CONFIG" || fail "checksums.txt is missing"
 grep -Fq 'install.sh' "$CONFIG" || fail "archive does not contain the one-line installer"
+grep -Eq '^[[:space:]]*-[[:space:]]+LICENSE$' "$CONFIG" || fail "archive does not contain LICENSE"
 grep -Fq 'deploy/systemd/s12ryt-ipv6.service' "$CONFIG" || fail "archive does not contain the systemd unit"
 grep -Fq '.Version' "$CONFIG" || fail "release asset names are not versioned"
 grep -Fq 'x86_64' "$CONFIG" || fail "amd64 release name does not follow GoReleaser convention"

@@ -34,6 +34,7 @@ archives:
       mtime: '{{ .CommitDate }}'
     files:
       - install.sh
+      - LICENSE
       - README.md
       - deploy/install.sh
       - deploy/uninstall.sh
