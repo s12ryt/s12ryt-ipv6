@@ -95,3 +95,12 @@
 - [x] 以 TDD 實作 `s12ryt-ipv6 agent ...` parser、機器輸出、錯誤與 timeout。
 - [x] 以 TDD 整合一鍵安裝 agent gate、回滾與 quickstart。
 - [x] 更新 README 與治理紀錄，完成完整回歸、品質審查及 Linux 雙架構建置。
+
+## 2026-08-25：Web UI 視覺美化（自主疊代）
+
+- [x] 取得「自主疊代升級」授權並記錄溝通偏好；契約寫入 `agent/question.md` 第 25 節。
+- [x] 以 10 項視覺刷新契約測試形成 RED，GREEN 實作「Teal Console」主題。
+- [x] 建立三層視覺深度、品牌漸層、狀態膠囊圓點、nav 指標條、卡片化、tabular-nums 與登入頁背景識別。
+- [x] 新增內嵌 SVG favicon 消除每次載入的 404。
+- [x] Playwright 40 組寬度×主題×頁面零溢出驗證、computed style 逐項證實與 console 歸零。
+- [x] 完成前端、Go 全套、vet 與 Linux 雙架構回歸，更新治理紀錄並推送。

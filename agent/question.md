@@ -313,3 +313,33 @@
 - 安裝成功後輸出不含秘密的 quickstart，至少展示 `agent status`、`agent schema`、JSON/YAML export，以及 export pipe 至 dry-run/apply 的明示格式命令；安裝器不接收或自動套用初始 agent 配置。
 - TDD 驗收至少證明：control 4 MiB 邊界與嚴格解析；命令樹、JSON envelope、固定錯誤碼／退出碼；JSON/YAML schema/export/apply round-trip；遮罩 export 不旋轉帳密；show-secrets 明文只在明示時出現；dry-run 零修改；所有破壞操作缺 `--yes` 時拒絕；prune 只影響明示區段；同名異定義資源在任何執行前拒絕；node ID 與 desired status 收斂；settings merge/default/restart_required；單步及 apply timeout；安裝器 agent gate 成功、degraded、故障回滾與 quickstart。
 - 最終需執行受影響 Go/shell 測試、完整 `go test ./...`、`go vet ./...`、前端既有 test/lint/build、shell 語法與 installer/release 測試、Linux amd64/arm64 交叉 build；環境不可用的 Linux root/netns、Docker、race 或 GoReleaser runtime 驗證須如實列為殘餘風險。
+
+## 25. Web UI 視覺美化（自主疊代授權）
+
+更新日期：2026-08-25
+狀態：使用者明示「自主疊代升級」並授權設計決策由 Agent 自行承擔（同時指示不追問細緻網路/技術細節）。
+
+### 25.1 目標與範圍
+
+- 使用者認為現行 Web UI「有點大眾」，要求美化；維持既有功能、公開契約與所有互動行為不變，不新增功能。
+- 變更範圍以 `web/src/styles.css` 為主、`web/src/styles.test.ts` 擴充視覺契約；未經必要不改 JSX 結構與 `index.html`。
+
+### 25.2 設計方向（Agent 定案）
+
+- 「Teal Console」深青基礎設施主控台風：保留產品既有 teal-green 識別，建立畫布／chrome（側欄頂欄）／卡片三層視覺深度。
+- 雙主題（light/dark/system）皆須支援；dark 採深藍炭底加微幅 teal 極光漸層，light 採冷灰紙面漸層。
+- 識別性元素：品牌方塊 teal 漸層、狀態膠囊改實心底色加圓點、導覽作用中項加 teal 內縮指標條、登入頁加 teal 光暈與細網格背景。
+- 字體維持系統字型堆疊（加入 zh-TW 字型優先序），不載入任何外部字型或 CDN 資源；數據採 tabular-nums。
+
+### 25.3 硬性約束（沿用既有契約）
+
+- `styles.test.ts` 既有全部字串斷言必須原樣保留：響應式斷點、modal 結構、180ms 側欄 grid 動畫、五個具名 keyframes、`@media 1024 → @media 430 → @keyframes pulse` 檔案順序、禁止任何 `:hover` 搭配 `transform: scale`。
+- 互動回饋僅用色彩／邊框／陰影變化；`prefers-reduced-motion` 降級規則不變；不得造成 layout shift 或水平溢出（375/768/1024/1440）。
+- 對比率：主要文字 ≥4.5:1；dark 主題按鈕改用深色文字 (`--on-primary`) 以達標。
+- 純 CSS 屬靜態樣式，依 TDD 例外條款處理；但仍以擴充 `styles.test.ts` 的「視覺刷新契約」形成 RED→GREEN 證據，並以完整前端 test/lint/build、Go embed test 與 Playwright 實機視覺驗證收尾。
+
+### 25.4 驗收
+
+- 前端全部既有測試＋新視覺契約測試通過；ESLint、TypeScript/Vite build 通過。
+- `go test ./...`（含 web embed）通過；治理紀錄同步更新；以原子提交推送 `origin/main`。
+- Playwright 以去敏 API mock 驗證登入頁與主殼雙主題、多寬度無水平溢出、console 無錯誤。
