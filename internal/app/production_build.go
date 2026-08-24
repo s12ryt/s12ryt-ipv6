@@ -355,17 +355,18 @@ func buildProduction(options ProductionOptions, platform productionPlatform) (_ 
 	if err != nil {
 		return nil, err
 	}
+	healthState := func() admin.HealthState {
+		state := health.State()
+		if state == admin.HealthHealthy && monitor.Status().State != dns64.NAT64Healthy {
+			return admin.HealthDegraded
+		}
+		return state
+	}
 	httpServer, err := admin.NewHTTPServer(admin.HTTPServerOptions{
 		Passwords: passwords, Sessions: sessions,
 		Limiter: auth.NewLoginLimiter(time.Now, 5, 500, 15*time.Minute),
-		Health: func() admin.HealthState {
-			state := health.State()
-			if state == admin.HealthHealthy && monitor.Status().State != dns64.NAT64Healthy {
-				return admin.HealthDegraded
-			}
-			return state
-		},
-		Events: events, SSEHeartbeat: 15 * time.Second,
+		Health:  healthState,
+		Events:  events, SSEHeartbeat: 15 * time.Second,
 	})
 	if err != nil {
 		return nil, err
@@ -401,7 +402,18 @@ func buildProduction(options ProductionOptions, platform productionPlatform) (_ 
 	if err != nil {
 		return nil, err
 	}
-	control, err := admin.NewControlServer(passwords, 30*time.Second)
+	agentService, err := admin.NewAgentService(admin.AgentServiceOptions{
+		Settings:       configuration,
+		ActiveSettings: settings,
+		Resources:      resources,
+		Nodes:          nodeService,
+		Operations:     operations,
+		Health:         healthState,
+	})
+	if err != nil {
+		return nil, err
+	}
+	control, err := admin.NewControlServerWithAgentLimits(passwords, agentService, 30*time.Second, 30*time.Minute)
 	if err != nil {
 		return nil, err
 	}

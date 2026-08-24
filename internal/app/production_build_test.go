@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
@@ -10,10 +11,12 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
 
+	"github.com/s12ryt/s12ryt-ipv6/internal/admin"
 	"github.com/s12ryt/s12ryt-ipv6/internal/dns64"
 	"github.com/s12ryt/s12ryt-ipv6/internal/firewall"
 	"github.com/s12ryt/s12ryt-ipv6/internal/network"
@@ -74,6 +77,37 @@ func (productionTestDiscovery) Discover(context.Context) (network.NetworkDiscove
 	return network.NetworkDiscoverySnapshot{}, nil
 }
 
+type productionTestControlListener struct {
+	connections chan net.Conn
+	closed      chan struct{}
+	once        sync.Once
+}
+
+func newProductionTestControlListener() *productionTestControlListener {
+	return &productionTestControlListener{connections: make(chan net.Conn), closed: make(chan struct{})}
+}
+
+func (l *productionTestControlListener) Accept() (net.Conn, error) {
+	select {
+	case connection := <-l.connections:
+		return connection, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *productionTestControlListener) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *productionTestControlListener) Addr() net.Addr { return productionTestAddr("control") }
+
+type productionTestAddr string
+
+func (a productionTestAddr) Network() string { return "unix" }
+func (a productionTestAddr) String() string  { return string(a) }
+
 func productionTestPlatform(frontend fs.FS) productionPlatform {
 	return productionPlatform{
 		newKernel:          func() (network.Kernel, error) { return productionTestKernel{}, nil },
@@ -126,6 +160,63 @@ func TestBuildProductionCreatesCompleteServiceAndDurableBootstrapFiles(t *testin
 		if statErr != nil || info.IsDir() {
 			t.Fatalf("bootstrap file %q stat = %v, info = %#v", path, statErr, info)
 		}
+	}
+}
+
+func TestBuildProductionConnectsAgentServiceToControlSocket(t *testing.T) {
+	directory := t.TempDir()
+	listener := newProductionTestControlListener()
+	frontend := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<!doctype html><title>s12ryt</title>")}}
+	platform := productionTestPlatform(frontend)
+	platform.controlListen = func(string) (net.Listener, error) { return listener, nil }
+
+	service, err := buildProduction(ProductionOptions{DataDirectory: directory, Stdout: io.Discard}, platform)
+	if err != nil {
+		t.Fatalf("buildProduction() error = %v", err)
+	}
+	built := service.(*productionService)
+	t.Cleanup(func() { _ = built.close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- built.service.options.ServeControl(ctx) }()
+
+	client, err := admin.NewControlClient(admin.ControlClientOptions{
+		Timeout: time.Second,
+		Dial: func(context.Context, string) (net.Conn, error) {
+			server, client := net.Pipe()
+			select {
+			case listener.connections <- server:
+				return client, nil
+			case <-ctx.Done():
+				_ = server.Close()
+				_ = client.Close()
+				return nil, ctx.Err()
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.CallAgent(ctx, "control.sock", json.RawMessage(`{"command":"status"}`))
+	if err != nil {
+		t.Fatalf("CallAgent(status) error = %v", err)
+	}
+	var response struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal(result, &response); err != nil || !response.OK {
+		t.Fatalf("status response = %s, error = %v", result, err)
+	}
+	cancel()
+	select {
+	case err := <-serveDone:
+		if err != nil {
+			t.Fatalf("ServeControl() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ServeControl() did not stop after cancellation")
 	}
 }
 
