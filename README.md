@@ -225,7 +225,9 @@ docker compose logs -f s12ryt-ipv6
 ## 健康與日誌
 
 - `GET /healthz` 未登入可讀，只回 `healthy`、`degraded` 或 `unhealthy`。
-- JSONL 日誌預設為 `/etc/s12ryt-ipv6/events.jsonl`，100MB 輪替、保留五檔，並同步輸出 stdout/journal。
+- JSONL 日誌預設為 `/etc/s12ryt-ipv6/events.jsonl`，100MB 輪替、保留五檔。
+- 每筆代理連線的 `proxy` 事件（含來源、目的與出站地址）只寫入檔案，不輸出 stdout/journal；管理頁「日誌」與 `agent logs tail` 仍可完整查詢。
+- `system` 與 `audit` 事件（服務啟停、設定變更、管理操作稽核）會同步輸出 stdout/journal。
 - 代理日誌不保存帳密、URL path、HTTP header 或內容。
 - 正常停止會停止節點、移除程式擁有的 IPv6/local route 與 `inet s12ryt_ipv6` table，並保存統計。
 

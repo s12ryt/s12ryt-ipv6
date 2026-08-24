@@ -343,3 +343,14 @@
 - 前端全部既有測試＋新視覺契約測試通過；ESLint、TypeScript/Vite build 通過。
 - `go test ./...`（含 web embed）通過；治理紀錄同步更新；以原子提交推送 `origin/main`。
 - Playwright 以去敏 API mock 驗證登入頁與主殼雙主題、多寬度無水平溢出、console 無錯誤。
+
+## 26. Console／Journal 不再顯示代理連線 IPv6
+
+更新日期：2026-08-25
+狀態：使用者明示要求「SSH 連入後不要顯示那些 IPv6」；設計決策由 Agent 依授權自行定案。
+
+- 使用者 SSH 進入 VPS 時，前景執行或 journal 中的輸出被每次代理連線的事件（含 `source_ip`、`destination_host`、`outbound_ip` 等 IPv6）洗版。
+- 變更：`internal/eventlog` 的 `proxy` 類事件（每筆代理連線，成功與失敗皆同）只寫入 JSONL 檔案，不再鏡射 stdout/journal。
+- `system` 與 `audit` 事件（服務啟停、健康、設定與管理操作稽核）維持同步輸出 stdout/journal，journal 保留診斷價值。
+- 檔案內容不變：Web UI「日誌」頁、`GET /api/logs` 與 `agent logs tail` 仍可查詢完整 proxy 事件；輪替、去敏、清除與統計行為全部不變。
+- TDD 驗收：RED 證明 proxy 事件仍鏡射 stdout；GREEN 後 stdout 僅含 system/audit、檔案仍含全部事件；完整 `go test ./...`、`go vet` 與 Linux 雙架構交叉建置通過。

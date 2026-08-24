@@ -104,3 +104,9 @@
 - [x] 新增內嵌 SVG favicon 消除每次載入的 404。
 - [x] Playwright 40 組寬度×主題×頁面零溢出驗證、computed style 逐項證實與 console 歸零。
 - [x] 完成前端、Go 全套、vet 與 Linux 雙架構回歸，更新治理紀錄並推送。
+
+## 2026-08-25：Console／Journal 靜音代理連線 IPv6
+
+- [x] 以 TDD 將 `proxy` 類事件改為只寫 JSONL 檔案，不再鏡射 stdout/journal。
+- [x] `system`／`audit` 事件維持 stdout/journal 輸出；Web UI 日誌與 `agent logs tail` 查詢不變。
+- [x] 更新 README 日誌說明與治理紀錄，完成 Go 全套回歸、vet 與雙架構交叉建置並推送。
