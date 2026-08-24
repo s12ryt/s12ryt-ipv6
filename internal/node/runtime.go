@@ -263,8 +263,21 @@ func (r *listenerRuntime) serve(conn net.Conn, handler proxy.ConnectionProxy, no
 			callback(endpoint)
 		}
 	}()
-	traffic, err := handler.ServeConn(r.ctx, conn)
+	traffic, err := r.dispatch(handler, conn)
 	r.emit(TrafficEvent{Lifecycle: TrafficTCPClosed, NodeID: nodeID, SourceIP: remoteIP(conn.RemoteAddr()), Traffic: traffic, Error: err})
+}
+
+// dispatch isolates protocol handler panics so a single malformed peer
+// connection can never take down the whole process; the panic is converted
+// into a per-connection error and the runtime keeps serving.
+func (r *listenerRuntime) dispatch(handler proxy.ConnectionProxy, conn net.Conn) (traffic proxy.ProxyTraffic, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			traffic = proxy.ProxyTraffic{}
+			err = fmt.Errorf("proxy handler panicked: %v", recovered)
+		}
+	}()
+	return handler.ServeConn(r.ctx, conn)
 }
 
 func (r *listenerRuntime) RefreshBindings(ctx context.Context, config Config, onDrained func(proxy.BindEndpoint)) error {

@@ -7,7 +7,9 @@ import (
 	"net"
 	"net/netip"
 	"reflect"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -153,6 +155,100 @@ func runtimeConfig() Config {
 		MaxTCP:  1, MaxUDP: 1, DialTimeout: time.Second, HandshakeTimeout: time.Second,
 		UDPIdleTimeout: time.Minute, ULAOverride: policy.ULAInherit, Outbound: "fixed-primary",
 	}
+}
+
+type panicOnceHandler struct {
+	panicked  atomic.Bool
+	panickedAt chan struct{}
+	entered   chan struct{}
+	onceP     sync.Once
+	onceE     sync.Once
+}
+
+func (h *panicOnceHandler) ServeConn(_ context.Context, conn net.Conn) (proxy.ProxyTraffic, error) {
+	if !h.panicked.Load() {
+		h.panicked.Store(true)
+		h.onceP.Do(func() { close(h.panickedAt) })
+		panic("malformed peer input triggered parser panic")
+	}
+	h.onceE.Do(func() { close(h.entered) })
+	_, err := conn.Read(make([]byte, 1))
+	return proxy.ProxyTraffic{Protocol: "socks"}, err
+}
+
+func TestListenerRuntimeSurvivesHandlerPanic(t *testing.T) {
+	binder := &listenerBinder{}
+	allocator, err := proxy.NewPortAllocator(52000, 52000, binder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := &panicOnceHandler{panickedAt: make(chan struct{}), entered: make(chan struct{})}
+	builder := &staticHandlerBuilder{handler: handler}
+	firewall := &fakeNodeFirewall{}
+	events := make(chan TrafficEvent, 8)
+	factory, err := NewListenerRuntimeFactory(ListenerRuntimeOptions{
+		Allocator: allocator, Handlers: builder, Firewall: firewall,
+		Observe: func(event TrafficEvent) { events <- event },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := factory.Start(context.Background(), runtimeConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = runtime.Stop(context.Background()) }()
+
+	firstClient, firstServer := net.Pipe()
+	binder.listeners[0].incoming <- firstServer
+	select {
+	case <-handler.panickedAt:
+	case <-time.After(time.Second):
+		t.Fatal("panicking connection was not dispatched")
+	}
+
+	drainTrafficEvents := func() []TrafficEvent {
+		var collected []TrafficEvent
+		for {
+			select {
+			case event := <-events:
+				collected = append(collected, event)
+			default:
+				return collected
+			}
+		}
+	}
+	var panicClosed *TrafficEvent
+	for i := 0; i < 50 && panicClosed == nil; i++ {
+		for _, event := range drainTrafficEvents() {
+			if event.Lifecycle == TrafficTCPClosed && event.Error != nil && strings.Contains(event.Error.Error(), "panicked") {
+				copied := event
+				panicClosed = &copied
+			}
+		}
+		if panicClosed != nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if panicClosed == nil {
+		t.Fatal("no TrafficTCPClosed event reported the handler panic")
+	}
+	_ = firstClient.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := firstClient.Read(make([]byte, 1)); err == nil {
+		t.Fatal("panicking connection remained open")
+	}
+	_ = firstClient.Close()
+
+	secondClient, secondServer := net.Pipe()
+	binder.listeners[0].incoming <- secondServer
+	select {
+	case <-handler.entered:
+	case <-time.After(time.Second):
+		t.Fatal("runtime stopped serving connections after a handler panic")
+	}
+	_ = secondClient.Close()
+	_ = secondServer.Close()
 }
 
 func TestListenerRuntimeStartsListenersEnforcesLimitAndStopsConnections(t *testing.T) {
