@@ -145,3 +145,6 @@
 - 確認缺陷 B（高，最可能的崩潰元兇）：`internal/node` runtime 每條代理連線一個 goroutine 且 `serve()` **無 panic recover**——公網掃描亂封包使 SOCKS5/HTTP/mixed 解析 panic 時整個程序崩潰（管理 HTTP 由 net/http 內建 recover 保護，代理資料路徑沒有）。以 TDD 修復：`dispatch()` 以 recover 將 panic 轉為單連線錯誤 `proxy handler panicked: %v`；RED 測試 `TestListenerRuntimeSurvivesHandlerPanic` 修復前整個測試 binary 被 panic 炸掉（stack trace 正是 `runtime.go:266 ServeConn` ← accept goroutine），GREEN 後程序存活、發出含 panicked 的 TrafficTCPClosed 事件、後續連線繼續服務。
 - 已知有界殘留（列建議未修）：刪除節點後 stats registry 殘留 entry（節點上限 1024、極小）；eventlog `RegisterSecret` 隨節點建立/輪換緩慢成長（量小）。皆非崩潰因素。
 - 完整回歸：`go test ./... -count=1`（15 packages 含新測試）、`go vet`、Linux amd64/arm64 `CGO_ENABLED=0` 交叉建置全部通過。
+- 使用者要求「再仔細翻翻」之第二輪深查（fd 洩漏／崩潰殘餘）：UDP relay mapping 生命週期（idle deadline 清理＋association 結束 closeMappings 全關）、DoT 每查詢連線由 `ExchangeContext` 自動關閉、port allocator 探測/預約 socket 全路徑關閉、network netlink 採 package-level 共享介面——全部排除洩漏。
+- firewall nftables 虛警澄清（重要教訓）：曾以 RED 測試（WSL 執行交叉編譯的 Linux test binary，實測 closed=0）懷疑 `nftables.New()` 每交易洩漏 netlink fd；查 module source（nftables v0.3.0 conn.go L68、L138-147、L256-260）後確認 **transient 模式下 `New()` 不開 socket，每操作由庫臨時 dial 並 `defer closer()` 自動關閉**，僅 `AsLasting()` 需要 `CloseLasting`。backend 無洩漏，測試已撤銷並以 WSL 實跑全套 PASS 驗證還原。
+- 剩餘低暴露缺口列建議未修：control socket agent 指令處理無 panic 防護（僅本機 root 可達 0600 socket，暴露度低）。崩潰最可能成因維持先前已修兩項：代理連線 panic（已隔離）與 dns64 快取無限成長（已上限）。
