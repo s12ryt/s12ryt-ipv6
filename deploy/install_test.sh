@@ -96,6 +96,16 @@ assert_equal "$(health_status '{ "status": "degraded" }')" "degraded"
 if health_status '{"status":"unhealthy"}' >/dev/null 2>&1 || health_status 'not-json' >/dev/null 2>&1; then
     fail "unacceptable health response was accepted"
 fi
+assert_equal "$(agent_status_health '{"ok":true,"data":{"health":"healthy"}}')" "healthy"
+assert_equal "$(agent_status_health '{"ok":true,"data":{"health":"degraded"}}')" "degraded"
+if agent_status_health '{"ok":false,"error":{"code":"unavailable"}}' >/dev/null 2>&1 ||
+    agent_status_health 'not-json' >/dev/null 2>&1 ||
+    agent_status_health '{"ok":true,"data":{"health":"unhealthy"}}' >/dev/null 2>&1 ||
+    agent_status_health 'prefix {"ok":true,"data":{"health":"healthy"}}' >/dev/null 2>&1 ||
+    agent_status_health '{"ok":true,"data":{"health":"healthy"}} trailing' >/dev/null 2>&1 ||
+    agent_status_health '{"ok":true,"data":{"health":"healthy"},"error":{"code":"internal_error"}}' >/dev/null 2>&1; then
+    fail "unacceptable agent status response was accepted"
+fi
 
 UFW_EVENTS="$TEMP_DIR/ufw-events"
 UFW_ACTIVE=0
@@ -169,6 +179,11 @@ printf 'old-unit\n' >"$UNIT_TARGET"
 printf 'old-config\n' >"$DATA_DIR/config.yaml"
 HEALTH_CALLS="$TRANSACTION_ROOT/health-calls"
 : >"$HEALTH_CALLS"
+AGENT_RESPONSE='{"ok":true,"data":{"health":"degraded"}}'
+wait_for_agent() {
+    printf '%s\n' agent >>"$EVENTS"
+    agent_status_health "$AGENT_RESPONSE" >/dev/null 2>&1
+}
 wait_for_health() {
     printf 'health:%s\n' "$1" >>"$EVENTS"
     printf 'x\n' >>"$HEALTH_CALLS"
@@ -205,10 +220,33 @@ wait_for_health() {
     printf 'health:%s\n' "$1" >>"$EVENTS"
     return 0
 }
-install_staged_release "$TRANSACTION_ROOT/stage"
+SUCCESS_OUTPUT=$(install_staged_release "$TRANSACTION_ROOT/stage")
 assert_equal "$(cat "$BINARY_TARGET")" "new-binary"
 grep -Fq 'ufw:45555' "$EVENTS" || fail "successful installation did not open the active UFW port"
 grep -Fq 'password:' "$EVENTS" || fail "successful first installation did not inspect the startup journal"
+grep -Fq 'agent' "$EVENTS" || fail "successful installation did not verify the agent control channel"
+printf '%s\n' "$SUCCESS_OUTPUT" | grep -Fq 's12ryt-ipv6 agent status' || fail "successful installation did not print the agent quickstart"
+printf '%s\n' "$SUCCESS_OUTPUT" | grep -Fq 's12ryt-ipv6 agent schema' || fail "successful installation did not print the schema quickstart"
+printf '%s\n' "$SUCCESS_OUTPUT" | grep -Fq 's12ryt-ipv6 agent export --format json' || fail "successful installation did not print the JSON export quickstart"
+printf '%s\n' "$SUCCESS_OUTPUT" | grep -Fq 's12ryt-ipv6 agent export --format yaml' || fail "successful installation did not print the YAML export quickstart"
+printf '%s\n' "$SUCCESS_OUTPUT" | grep -Fq '| sudo s12ryt-ipv6 agent apply --format yaml --dry-run' || fail "successful installation did not print the piped dry-run quickstart"
+
+printf 'old-binary\n' >"$BINARY_TARGET"
+printf 'old-unit\n' >"$UNIT_TARGET"
+printf 'old-config\n' >"$DATA_DIR/config.yaml"
+rm -f "$EVENTS"
+AGENT_RESPONSE='not-json'
+if install_staged_release "$TRANSACTION_ROOT/stage"; then
+    fail "installation reported success after the agent gate failed"
+fi
+assert_equal "$(cat "$BINARY_TARGET")" "old-binary"
+assert_equal "$(cat "$UNIT_TARGET")" "old-unit"
+assert_equal "$(cat "$DATA_DIR/config.yaml")" "old-config"
+grep -Fq 'agent' "$EVENTS" || fail "failed installation did not execute the agent gate"
+if grep -Fq 'ufw:' "$EVENTS" || grep -Fq 'password:' "$EVENTS"; then
+    fail "failed agent gate changed firewall or displayed a password"
+fi
+AGENT_RESPONSE='{"ok":true,"data":{"health":"healthy"}}'
 
 printf 'old-binary\n' >"$BINARY_TARGET"
 printf 'old-unit\n' >"$UNIT_TARGET"

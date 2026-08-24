@@ -97,6 +97,26 @@ health_status() {
     esac
 }
 
+agent_status_health() {
+    response=$1
+    case "$response" in
+        *'
+'*) return 1 ;;
+    esac
+	case "$response" in
+		'{"ok":true,"data":{'*'}}') ;;
+		*) return 1 ;;
+	esac
+	case "$response" in
+		*'"error"'*) return 1 ;;
+	esac
+    status=$(printf '%s\n' "$response" | sed -n 's/.*"health"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    case "$status" in
+        healthy | degraded) printf '%s\n' "$status" ;;
+        *) return 1 ;;
+    esac
+}
+
 render_systemd_unit() {
     source_path=$1
     destination_path=$2
@@ -229,6 +249,29 @@ wait_for_health() {
         [ "$attempt" -lt "$HEALTH_TIMEOUT" ] && sleep 1
     done
     return 1
+}
+
+wait_for_agent() {
+    attempt=0
+    while [ "$attempt" -lt "$HEALTH_TIMEOUT" ]; do
+        response=$("$BINARY_TARGET" agent status --data-dir "$DATA_DIR" --timeout 2s 2>/dev/null || true)
+        if [ -n "$response" ] && agent_status_health "$response" >/dev/null 2>&1; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        [ "$attempt" -lt "$HEALTH_TIMEOUT" ] && sleep 1
+    done
+    return 1
+}
+
+show_agent_quickstart() {
+    printf '%s\n' 'agent CLI quickstart:'
+    printf '  sudo s12ryt-ipv6 agent status --data-dir %s\n' "$DATA_DIR"
+    printf '  sudo s12ryt-ipv6 agent schema --data-dir %s\n' "$DATA_DIR"
+    printf '  sudo s12ryt-ipv6 agent export --format json --data-dir %s\n' "$DATA_DIR"
+    printf '  sudo s12ryt-ipv6 agent export --format yaml --data-dir %s\n' "$DATA_DIR"
+    printf '  sudo s12ryt-ipv6 agent export --format yaml --data-dir %s | sudo s12ryt-ipv6 agent apply --format yaml --dry-run --data-dir %s\n' "$DATA_DIR" "$DATA_DIR"
+    printf '  sudo s12ryt-ipv6 agent apply --format yaml --file ./agent-config.yaml --dry-run --data-dir %s\n' "$DATA_DIR"
 }
 
 open_management_firewall() {
@@ -381,7 +424,7 @@ install_staged_release() {
         return 1
     }
     started_at=$(date --iso-8601=seconds)
-    if ! service_reload || ! service_enable_start || ! wait_for_health "$new_port"; then
+    if ! service_reload || ! service_enable_start || ! wait_for_health "$new_port" || ! wait_for_agent; then
         rollback_staged_release "$backup_dir" "$had_binary" "$had_unit" "$had_config" "$old_port"
         rm -rf "$backup_dir"
         return 1
@@ -391,6 +434,7 @@ install_staged_release() {
     if [ "$had_password" -eq 0 ]; then
         show_initial_password "$started_at"
     fi
+    show_agent_quickstart
     rm -rf "$backup_dir"
     return 0
 }
