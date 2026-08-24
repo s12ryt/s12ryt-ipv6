@@ -231,6 +231,13 @@ docker compose logs -f s12ryt-ipv6
 - 代理日誌不保存帳密、URL path、HTTP header 或內容。
 - 正常停止會停止節點、移除程式擁有的 IPv6/local route 與 `inet s12ryt_ipv6` table，並保存統計。
 
+## SSH 登入時顯示大量 IPv6
+
+本程式不會在 SSH 登入時輸出任何 IP；程式唯一的 stdout 輸出是首次啟動的管理員密碼（僅一次）。若登入後看到一串 IPv6 清單，來源是發行版或 VPS 供應商的登入訊息在列出網卡上的所有位址，而 `address` 模式本來就會把每個代理 IPv6 以 `/128` 加在網卡上。兩種處理方式：
+
+- 最快且可逆：關閉登入訊息。`sudo chmod -x /etc/update-motd.d/*`（Ubuntu 動態訊息）與 `sudo truncate -s 0 /etc/motd`（靜態訊息）。不影響代理與日誌。
+- 程式面：前綴範本改用 `local-route-freebind` 模式，地址不再逐一掛在網卡上，只保留一條 local route；因範本模式不可直接變更，需建立新範本並遷移固定地址／池／節點後刪除舊範本。
+
 ## Linux integration 測試
 
 真實 netlink/nftables 測試必須在一次性 network namespace 內以 root 執行：
