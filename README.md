@@ -233,10 +233,28 @@ docker compose logs -f s12ryt-ipv6
 
 ## SSH 登入時顯示大量 IPv6
 
-本程式不會在 SSH 登入時輸出任何 IP；程式唯一的 stdout 輸出是首次啟動的管理員密碼（僅一次）。若登入後看到一串 IPv6 清單，來源是發行版或 VPS 供應商的登入訊息在列出網卡上的所有位址，而 `address` 模式本來就會把每個代理 IPv6 以 `/128` 加在網卡上。兩種處理方式：
+本程式不會在 SSH 登入時輸出任何 IP；程式唯一的 stdout 輸出是首次啟動的管理員密碼（僅一次）。若登入後看到一串 IPv6 清單，來源是發行版或 VPS 供應商的登入訊息在列出網卡上的所有位址，而 `address` 模式本來就會把每個代理 IPv6 以 `/128` 加在網卡上。
 
-- 最快且可逆：關閉登入訊息。`sudo chmod -x /etc/update-motd.d/*`（Ubuntu 動態訊息）與 `sudo truncate -s 0 /etc/motd`（靜態訊息）。不影響代理與日誌。
-- 程式面：前綴範本改用 `local-route-freebind` 模式，地址不再逐一掛在網卡上，只保留一條 local route；因範本模式不可直接變更，需建立新範本並遷移固定地址／池／節點後刪除舊範本。
+想**保留登入歡迎訊息、只隱藏其中的 IPv6** 時：
+
+1. 先找出列 IP 的腳本（只讀取，不會改動任何東西）：
+
+   ```sh
+   sudo grep -n -E 'landscape-sysinfo|hostname -[iI]|ifconfig|ip addr|ip -6' /etc/update-motd.d/* /etc/profile.d/*.sh /etc/bash.bashrc /etc/profile 2>/dev/null
+   ```
+
+2. 依查到的來源處理：
+   - **檔名或內容專門顯示 IP 的腳本**（常見於 VPS 供應商，檔名常含 `ip`/`address`）：直接停用該腳本即可，其他歡迎內容不受影響——`sudo chmod -x /etc/update-motd.d/那個檔名`。
+   - **Ubuntu 的 `50-landscape-sysinfo`**（它同時顯示負載／記憶體／磁碟與 IP）：不要停用，改為過濾其 IPv6 行（備份保存在同目錄 `.50-landscape-sysinfo.orig`，不會被執行）：
+
+     ```sh
+     sudo sh -c 'f=/etc/update-motd.d/50-landscape-sysinfo; if [ -f "$f" ] && grep -q landscape-sysinfo "$f" && [ ! -f /etc/update-motd.d/.50-landscape-sysinfo.orig ]; then cp -p "$f" /etc/update-motd.d/.50-landscape-sysinfo.orig && printf "#!/bin/sh\n/etc/update-motd.d/.50-landscape-sysinfo.orig | grep -v \"IPv6 address\"\n" > "$f" && chmod 755 "$f" && echo FILTERED; elif [ -f /etc/update-motd.d/.50-landscape-sysinfo.orig ]; then echo ALREADY-FILTERED; else echo NO-landscape; fi'
+     ```
+
+     還原：`sudo cp -p /etc/update-motd.d/.50-landscape-sysinfo.orig /etc/update-motd.d/50-landscape-sysinfo`。
+3. 登出再登入即可驗證。若之前曾以 `chmod -x /etc/update-motd.d/*` 全部關閉，先 `sudo chmod +x /etc/update-motd.d/*` 恢復再套用過濾。
+
+不影響代理與日誌。程式面的替代方案是前綴範本改用 `local-route-freebind` 模式（地址不掛網卡，登入訊息自然列不到），但範本模式不可直接變更，需建立新範本並遷移固定地址／池／節點後刪除舊範本。
 
 ## Linux integration 測試
 
