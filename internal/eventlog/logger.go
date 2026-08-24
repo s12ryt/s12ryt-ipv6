@@ -192,7 +192,9 @@ func (l *Logger) writeLocked(event Event) error {
 		return fmt.Errorf("write log: %w", err)
 	}
 	l.size += int64(len(line))
-	if l.stdout != nil {
+	// Proxy connection events stay in the file only: they are high-volume and
+	// carry per-connection addresses, so they must not flood stdout/journal.
+	if l.stdout != nil && event.Kind != KindProxy {
 		if _, err := l.stdout.Write(line); err != nil {
 			return fmt.Errorf("write stdout log: %w", err)
 		}

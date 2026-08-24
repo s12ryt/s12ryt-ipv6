@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestLoggerWritesJSONLToFileAndStdoutWithRegisteredSecretsRedacted(t *testing.T) {
+func TestLoggerKeepsProxyEventsOutOfStdoutWhileRedactingSecrets(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	var stdout bytes.Buffer
 	now := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
@@ -37,8 +37,8 @@ func TestLoggerWritesJSONLToFileAndStdoutWithRegisteredSecretsRedacted(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(contents, stdout.Bytes()) {
-		t.Fatalf("file and stdout differ\nfile: %s\nstdout: %s", contents, stdout.Bytes())
+	if len(contents) == 0 {
+		t.Fatal("proxy event missing from log file")
 	}
 	if bytes.Contains(contents, []byte("top-secret-password")) {
 		t.Fatal("registered secret leaked into log")
@@ -46,12 +46,59 @@ func TestLoggerWritesJSONLToFileAndStdoutWithRegisteredSecretsRedacted(t *testin
 	if bytes.Contains(contents, []byte("url_path")) || bytes.Contains(contents, []byte("headers")) {
 		t.Fatalf("forbidden HTTP detail appeared in log: %s", contents)
 	}
+	if stdout.Len() != 0 {
+		t.Fatalf("proxy connection event leaked to stdout: %s", stdout.Bytes())
+	}
 	var event Event
 	if err := json.Unmarshal(bytes.TrimSpace(contents), &event); err != nil {
 		t.Fatalf("log is not valid JSONL: %v", err)
 	}
 	if event.Error != "authentication [REDACTED] rejected" || event.Time != now {
 		t.Fatalf("event = %#v", event)
+	}
+}
+
+func TestLoggerMirrorsSystemAndAuditEventsToStdout(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	var stdout bytes.Buffer
+	logger, err := New(path, 1024*1024, 5, &stdout, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	events := []Event{
+		{Kind: KindProxy, Action: "connect", Node: "edge-a", Success: true, OutboundIP: "2001:db8::9"},
+		{Kind: KindSystem, Action: "health", Success: true},
+		{Kind: KindAudit, Action: "node.start", Actor: "admin", Node: "edge-a", Success: true},
+		{Kind: KindProxy, Action: "associate", Node: "edge-a", Success: false},
+	}
+	for _, event := range events {
+		if err := logger.Write(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stdoutLines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	if len(stdoutLines) != 2 {
+		t.Fatalf("stdout should carry only system and audit events, got %d lines: %s", len(stdoutLines), stdout.Bytes())
+	}
+	if !strings.Contains(stdoutLines[0], `"kind":"system"`) || !strings.Contains(stdoutLines[1], `"kind":"audit"`) {
+		t.Fatalf("stdout order or kinds wrong: %s", stdout.Bytes())
+	}
+	if strings.Contains(stdout.String(), "2001:db8::9") {
+		t.Fatalf("proxy address leaked to stdout: %s", stdout.Bytes())
+	}
+
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Split(strings.TrimSpace(string(contents)), "\n"); len(lines) != 4 {
+		t.Fatalf("file should keep all four events, got %d", len(lines))
 	}
 }
 
