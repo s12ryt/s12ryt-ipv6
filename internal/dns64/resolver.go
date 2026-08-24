@@ -21,6 +21,8 @@ const (
 	minimumTTL  = 30 * time.Second
 	maximumTTL  = 10 * time.Minute
 	negativeTTL = 30 * time.Second
+
+	defaultCacheMaxEntries = 4096
 )
 
 var (
@@ -62,11 +64,12 @@ type cacheEntry struct {
 }
 
 type Resolver struct {
-	mu        sync.RWMutex
-	endpoints []Endpoint
-	queryer   Queryer
-	now       func() time.Time
-	cache     map[cacheKey]cacheEntry
+	mu              sync.RWMutex
+	endpoints       []Endpoint
+	queryer         Queryer
+	now             func() time.Time
+	cache           map[cacheKey]cacheEntry
+	cacheMaxEntries int
 }
 
 func NewResolver(endpoints []Endpoint, queryer Queryer, now func() time.Time) (*Resolver, error) {
@@ -80,10 +83,11 @@ func NewResolver(endpoints []Endpoint, queryer Queryer, now func() time.Time) (*
 		now = time.Now
 	}
 	return &Resolver{
-		endpoints: append([]Endpoint(nil), endpoints...),
-		queryer:   queryer,
-		now:       now,
-		cache:     make(map[cacheKey]cacheEntry),
+		endpoints:       append([]Endpoint(nil), endpoints...),
+		queryer:         queryer,
+		now:             now,
+		cache:           make(map[cacheKey]cacheEntry),
+		cacheMaxEntries: defaultCacheMaxEntries,
 	}, nil
 }
 
@@ -196,10 +200,42 @@ func (r *Resolver) lookup(ctx context.Context, name string, record RecordType) (
 		}
 		r.mu.Lock()
 		r.cache[key] = entry
+		r.evictLocked(key, now)
 		r.mu.Unlock()
 		return entry, nil
 	}
 	return cacheEntry{}, fmt.Errorf("all DNS resolvers failed: %w", errors.Join(failures...))
+}
+
+// evictLocked bounds the cache size: expired entries are removed first, and
+// when no expired entries remain the ones expiring soonest are evicted so a
+// long-running resolver cannot grow without limit on unique names.
+func (r *Resolver) evictLocked(keep cacheKey, now time.Time) {
+	if r.cacheMaxEntries <= 0 || len(r.cache) <= r.cacheMaxEntries {
+		return
+	}
+	for key, entry := range r.cache {
+		if key != keep && !now.Before(entry.expires) {
+			delete(r.cache, key)
+		}
+	}
+	for len(r.cache) > r.cacheMaxEntries {
+		victim := cacheKey{}
+		var victimExpiry time.Time
+		found := false
+		for key, entry := range r.cache {
+			if key == keep {
+				continue
+			}
+			if !found || entry.expires.Before(victimExpiry) {
+				victim, victimExpiry, found = key, entry.expires, true
+			}
+		}
+		if !found {
+			return
+		}
+		delete(r.cache, victim)
+	}
 }
 
 func resolveLiteral(address netip.Addr, destinationPolicy policy.DestinationPolicy, ulaOverride policy.ULAOverride, nat64Prefix netip.Prefix) (Resolution, error) {

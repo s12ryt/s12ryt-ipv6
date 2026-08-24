@@ -46,6 +46,88 @@ func (f *fakeQueryer) callCount() int {
 	return len(f.calls)
 }
 
+func TestResolverCacheDropsExpiredEntriesWhenInserting(t *testing.T) {
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	reply := func(name string) (queryKey, fakeReply) {
+		return queryKey{endpoint: "primary", name: name, record: TypeAAAA}, fakeReply{
+			result: QueryResult{Addresses: []netip.Addr{netip.MustParseAddr("2606:4700:4700::1111")}, TTL: time.Minute},
+		}
+	}
+	aKey, aReply := reply("a.example.")
+	bKey, bReply := reply("b.example.")
+	cKey, cReply := reply("c.example.")
+	queryer := &fakeQueryer{replies: map[queryKey]fakeReply{aKey: aReply, bKey: bReply, cKey: cReply}}
+	resolver, err := NewResolver(testEndpoints()[:1], queryer, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver.cacheMaxEntries = 2
+
+	for _, name := range []string{"a.example.", "b.example."} {
+		if _, err := resolver.Resolve(context.Background(), name, policy.DestinationPolicy{}, policy.ULAInherit, netip.Prefix{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(resolver.cache) != 2 {
+		t.Fatalf("cache size = %d, want 2", len(resolver.cache))
+	}
+
+	now = now.Add(90 * time.Second)
+	if _, err := resolver.Resolve(context.Background(), "c.example.", policy.DestinationPolicy{}, policy.ULAInherit, netip.Prefix{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(resolver.cache) != 1 {
+		t.Fatalf("expired entries were not evicted, cache = %d entries: %#v", len(resolver.cache), resolver.cache)
+	}
+	if _, ok := resolver.cache[cacheKey{name: "c.example.", record: TypeAAAA}]; !ok {
+		t.Fatalf("fresh entry missing after eviction: %#v", resolver.cache)
+	}
+}
+
+func TestResolverCacheEvictsEarliestExpiryWhenNoExpiredEntriesExist(t *testing.T) {
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	queryer := &fakeQueryer{replies: map[queryKey]fakeReply{
+		{endpoint: "primary", name: "short.example.", record: TypeAAAA}: {
+			result: QueryResult{Addresses: []netip.Addr{netip.MustParseAddr("2606:4700:4700::1111")}, TTL: time.Minute},
+		},
+		{endpoint: "primary", name: "long.example.", record: TypeAAAA}: {
+			result: QueryResult{Addresses: []netip.Addr{netip.MustParseAddr("2606:4700:4700::2222")}, TTL: 10 * time.Minute},
+		},
+		{endpoint: "primary", name: "fresh.example.", record: TypeAAAA}: {
+			result: QueryResult{Addresses: []netip.Addr{netip.MustParseAddr("2606:4700:4700::3333")}, TTL: 5 * time.Minute},
+		},
+	}}
+	resolver, err := NewResolver(testEndpoints()[:1], queryer, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver.cacheMaxEntries = 2
+
+	if _, err := resolver.Resolve(context.Background(), "short.example.", policy.DestinationPolicy{}, policy.ULAInherit, netip.Prefix{}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(10 * time.Second)
+	if _, err := resolver.Resolve(context.Background(), "long.example.", policy.DestinationPolicy{}, policy.ULAInherit, netip.Prefix{}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(10 * time.Second)
+	if _, err := resolver.Resolve(context.Background(), "fresh.example.", policy.DestinationPolicy{}, policy.ULAInherit, netip.Prefix{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(resolver.cache) != 2 {
+		t.Fatalf("cache size = %d, want 2", len(resolver.cache))
+	}
+	if _, ok := resolver.cache[cacheKey{name: "short.example.", record: TypeAAAA}]; ok {
+		t.Fatalf("earliest-expiry entry survived eviction: %#v", resolver.cache)
+	}
+	for _, name := range []string{"long.example.", "fresh.example."} {
+		if _, ok := resolver.cache[cacheKey{name: name, record: TypeAAAA}]; !ok {
+			t.Fatalf("entry %s missing after eviction: %#v", name, resolver.cache)
+		}
+	}
+}
+
 func TestResolverFailsOverInOrderAndClampsShortPositiveTTL(t *testing.T) {
 	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
 	queryer := &fakeQueryer{replies: map[queryKey]fakeReply{
