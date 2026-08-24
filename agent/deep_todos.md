@@ -110,3 +110,10 @@
 - [x] 以 TDD 將 `proxy` 類事件改為只寫 JSONL 檔案，不再鏡射 stdout/journal。
 - [x] `system`／`audit` 事件維持 stdout/journal 輸出；Web UI 日誌與 `agent logs tail` 查詢不變。
 - [x] 更新 README 日誌說明與治理紀錄，完成 Go 全套回歸、vet 與雙架構交叉建置並推送。
+
+## 2026-08-25：穩定性審查與崩潰修復
+
+- [x] 全面掃描 goroutine 生命週期、HTTP 超時、限速器、SSE 與成長型 map；確認兩項高嚴重度缺陷。
+- [x] TDD 修復 dns64 快取無上限（4096 上限＋過期優先／最早到期淘汰）。
+- [x] TDD 修復代理連線 goroutine 無 panic 防護（dispatch recover，單連線錯誤化）。
+- [x] 完整回歸（15 packages／vet／雙架構交叉建置）、治理紀錄更新並推送。

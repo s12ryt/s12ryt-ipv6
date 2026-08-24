@@ -137,3 +137,11 @@
 - TDD：先改寫 eventlog 測試為新契約（proxy 事件不得出現於 stdout、system/audit 仍鏡射、檔案保留全部四筆事件），RED 重現 proxy 事件洗版 stdout；GREEN 後 eventlog/app/admin/node/cmd 全綠。README「健康與日誌」段同步更新；完整 `go test ./...`、vet 與雙架構交叉建置通過。
 - 使用者澄清「一登入 SSH 就有當前 IP 列表」與 journal 無關。全面排查證據：install.sh/deploy 腳本零 motd/profile.d 寫入；systemd unit 無 console 輸出；整個程式 stdout 僅 service.go 的首次管理員密碼一行。診斷：登入時的 IPv6 牆來自 VPS 發行版/供應商登入訊息列出網卡位址，而 `address` 模式本就會把代理 IPv6 掛上網卡。
 - 使用者後續偏好：**要保留登入歡迎訊息，只隱藏其中 IPv6**。README「SSH 登入時顯示大量 IPv6」一節已改為過濾方案：先以唯讀 grep 命令找出列 IP 腳本（涵蓋 landscape-sysinfo／hostname -I／ifconfig／ip addr／ip -6），專列 IP 的供應商腳本直接 `chmod -x` 停用；Ubuntu `50-landscape-sysinfo` 因混合負載/記憶體資訊改用 wrapper 過濾（備份 `.50-landscape-sysinfo.orig` 含點檔名不會被 run-parts 執行，可冪等重跑與一鍵還原）。兩個命令皆已於 WSL 模擬環境實測：過濾後保留系統資訊/IPv4/記憶體、三行 IPv6 全消失；冪等與還原路徑驗證通過。程式碼零變更（純文件，TDD 例外）。
+
+## 2026-08-25（第二輪）：穩定性審查與崩潰修復
+
+- 使用者要求全面穩定性審查並回報 VPS「過沒多久就崩潰」。掃描結論：goroutine 產生點 8 處生命週期全部健全（watcher 皆有 done channel、copy 通道有緩衝、DAD 有 WaitGroup＋逾時）；管理 HTTP 有 `ReadHeaderTimeout`＋`IdleTimeout`（SSE 依賴無 WriteTimeout，合理）；`internal/auth` LoginLimiter 每次 Allow/RecordFailure 都 prune，SSE broker 有 mutex 清理，皆無洩漏。
+- 確認缺陷 A（高）：`internal/dns64` resolver 的快取 map 無上限也無清理——代理拜訪愈多獨特網域記憶體無限成長（長時間運行的慢性 OOM 因素）。以 TDD 修復：新增 `cacheMaxEntries`（預設 4096）與 `evictLocked`（先清過期、仍超限淘汰最早到期）；RED 兩測因欄位不存在失敗，GREEN 後 dns64 全綠。
+- 確認缺陷 B（高，最可能的崩潰元兇）：`internal/node` runtime 每條代理連線一個 goroutine 且 `serve()` **無 panic recover**——公網掃描亂封包使 SOCKS5/HTTP/mixed 解析 panic 時整個程序崩潰（管理 HTTP 由 net/http 內建 recover 保護，代理資料路徑沒有）。以 TDD 修復：`dispatch()` 以 recover 將 panic 轉為單連線錯誤 `proxy handler panicked: %v`；RED 測試 `TestListenerRuntimeSurvivesHandlerPanic` 修復前整個測試 binary 被 panic 炸掉（stack trace 正是 `runtime.go:266 ServeConn` ← accept goroutine），GREEN 後程序存活、發出含 panicked 的 TrafficTCPClosed 事件、後續連線繼續服務。
+- 已知有界殘留（列建議未修）：刪除節點後 stats registry 殘留 entry（節點上限 1024、極小）；eventlog `RegisterSecret` 隨節點建立/輪換緩慢成長（量小）。皆非崩潰因素。
+- 完整回歸：`go test ./... -count=1`（15 packages 含新測試）、`go vet`、Linux amd64/arm64 `CGO_ENABLED=0` 交叉建置全部通過。
