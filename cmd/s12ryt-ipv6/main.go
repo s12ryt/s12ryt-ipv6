@@ -27,6 +27,7 @@ type commandDependencies struct {
 	resetPassword     func(context.Context, string) (string, error)
 	getManagementPort func(context.Context, string) (uint16, error)
 	setManagementPort func(context.Context, string, uint16) error
+	agent             func(context.Context, []string, io.Writer) int
 }
 
 type noOpSessionRevoker struct{}
@@ -48,6 +49,13 @@ func runWithDependencies(args []string, stdout, stderr io.Writer, dependencies c
 }
 
 func runWithContext(ctx context.Context, args []string, stdout, stderr io.Writer, dependencies commandDependencies) int {
+	if len(args) > 0 && args[0] == "agent" {
+		if dependencies.agent == nil {
+			writeAgentCLIError(stdout, "internal_error", "agent command is unavailable")
+			return 1
+		}
+		return dependencies.agent(ctx, args[1:], stdout)
+	}
 	if len(args) == 1 && args[0] == "version" {
 		fmt.Fprintf(stdout, "s12ryt-ipv6 %s\n", version)
 		return 0
@@ -141,6 +149,9 @@ func defaultCommandDependencies() commandDependencies {
 		resetPassword:     resetAdminPassword,
 		getManagementPort: getManagementPort,
 		setManagementPort: setManagementPort,
+		agent: func(ctx context.Context, args []string, output io.Writer) int {
+			return runAgentCLI(ctx, args, os.Stdin, output, callAgentControl)
+		},
 	}
 }
 
