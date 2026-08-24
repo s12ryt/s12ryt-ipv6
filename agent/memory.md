@@ -127,3 +127,4 @@
 - 重建基線全部通過：`go test ./... -count=1 -timeout=300s`（15 packages）、`go vet ./...`、前端 13 files／63 tests、ESLint、Vite production build、`deploy/install_test.sh`、`deploy/release_test.sh`、根與 deploy shell 語法檢查，以及 `CGO_ENABLED=0` Linux amd64/arm64 交叉建置。
 - 發現 `NodesView` 的 SSE `waitFor` 測試在與 Go build/vet 並行搶 CPU 時會暫態超時（首次 49s、單獨重跑 12s 全綠）；之後執行前端測試應避免與重編譯並行，避免誤判為缺陷。
 - 依使用者指示以 7 筆依賴有序原子提交收尾 8/24 工作（control 擴充、config replace、agent service、production 接線、agent CLI、安裝器 agent gate、文件與治理紀錄）並推送 `origin/main`。
+- 提交期間發現 Windows `core.autocrlf=true` 且無 `.gitattributes` 的陷阱：stash/checkout 流程會把工作樹文字檔 smudge 成 CRLF，WSL shell 測試隨即失敗（`set: Illegal option -`）；repo 內提交內容經 `git cat-file` 驗證仍為純 LF 未受污染。已以 HEAD blob bytes 直寫恢復工作樹並重驗 shell 契約測試與 Go 全套回歸。教訓：此環境下避免依賴 stash 驗證中間提交；長期應考慮加入 `.gitattributes` 固定 LF（未經使用者同意，本次未動）。
