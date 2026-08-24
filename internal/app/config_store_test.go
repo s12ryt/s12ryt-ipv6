@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/s12ryt/s12ryt-ipv6/internal/config"
 )
@@ -158,6 +159,45 @@ func TestConfigStoreRejectsZeroManagementPortWithoutChangingState(t *testing.T) 
 	}
 	if reloaded.Management.Port != before.Management.Port {
 		t.Fatalf("disk management port = %d, want %d", reloaded.Management.Port, before.Management.Port)
+	}
+}
+
+func TestConfigStoreReplacesWholeValidatedConfigurationAtomically(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	store, err := NewConfigStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.LoadOrCreate(); err != nil {
+		t.Fatal(err)
+	}
+	candidate := config.Default()
+	candidate.Management.Port = 45555
+	candidate.AllowULA = true
+	candidate.Timeouts.Dial = 12 * time.Second
+	if err := store.Replace(candidate); err != nil {
+		t.Fatal(err)
+	}
+	candidate.Resolvers[0].Name = "mutated caller"
+	if got := store.Snapshot(); got.Management.Port != 45555 || !got.AllowULA || got.Timeouts.Dial != 12*time.Second || got.Resolvers[0].Name == "mutated caller" {
+		t.Fatalf("live config = %#v", got)
+	}
+	reloaded, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Management.Port != 45555 || !reloaded.AllowULA || reloaded.Timeouts.Dial != 12*time.Second {
+		t.Fatalf("persisted config = %#v", reloaded)
+	}
+
+	invalid := store.Snapshot()
+	invalid.Management.Port = 0
+	before := store.Snapshot()
+	if err := store.Replace(invalid); err == nil {
+		t.Fatal("Replace(invalid) error = nil")
+	}
+	if got := store.Snapshot(); got.Management.Port != before.Management.Port {
+		t.Fatalf("live config changed after rejected replacement: %#v", got)
 	}
 }
 

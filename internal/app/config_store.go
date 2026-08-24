@@ -78,6 +78,24 @@ func (s *ConfigStore) SaveManagementPort(port uint16) error {
 	})
 }
 
+// Replace validates and durably replaces the complete runtime configuration.
+func (s *ConfigStore) Replace(candidate config.Config) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.initialized {
+		return errors.New("config store is not initialized")
+	}
+	candidate = cloneConfig(candidate)
+	if err := candidate.Validate(); err != nil {
+		return fmt.Errorf("validate config replacement: %w", err)
+	}
+	if err := config.Save(s.path, candidate); err != nil {
+		return fmt.Errorf("save config replacement: %w", err)
+	}
+	s.config = candidate
+	return nil
+}
+
 func (s *ConfigStore) update(change func(*config.Config)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
