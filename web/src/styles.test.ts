@@ -57,3 +57,56 @@ describe('responsive layout contract', () => {
     expect(mobile).toContain('border-radius: 0;')
   })
 })
+
+describe('visual refresh contract', () => {
+  it('defines layered theme tokens for canvas, chrome, and elevated surfaces', () => {
+    expect(css).toContain('--chrome:')
+    expect(css).toContain('--on-primary:')
+    expect(css).toContain('--shadow-sm:')
+    expect(css).toContain('color-scheme: light')
+    expect(css).toContain('color-scheme: dark')
+  })
+
+  it('keeps the zh-TW-aware system font stack without external font loading', () => {
+    expect(css).toContain('"Noto Sans TC"')
+    expect(css).not.toContain('fonts.googleapis')
+    expect(css).not.toContain('@import')
+    expect(css).not.toContain('@font-face')
+  })
+
+  it('gives the brand mark a teal gradient identity', () => {
+    expect(css).toMatch(/\.product-mark \{[^}]*linear-gradient\(135deg/)
+  })
+
+  it('renders live status pills with soft fills and dot indicators', () => {
+    expect(css).toContain('.status-badge::before')
+    expect(css).toMatch(/\.status-badge::before \{[^}]*border-radius: 999px/)
+  })
+
+  it('marks the active nav item with an inset accent rail on desktop', () => {
+    expect(css).toMatch(/\.nav-button\.active \{[^}]*inset 3px 0 0 0 var\(--primary\)/)
+  })
+
+  it('elevates metric strips and data sections as cards', () => {
+    expect(css).toMatch(/\.metrics \{[^}]*background: var\(--surface\)/)
+    expect(css).toMatch(/\.data-section \{[^}]*background: var\(--surface\)/)
+    expect(css).toMatch(/\.resource-section \{[^}]*background: var\(--surface\)/)
+  })
+
+  it('uses tabular numerals for numeric data', () => {
+    expect(css).toContain('font-variant-numeric: tabular-nums;')
+  })
+
+  it('gives the login page an ambient identity backdrop', () => {
+    expect(css).toMatch(/\.login-page \{[^}]*radial-gradient/)
+  })
+
+  it('adds press feedback without hover-scale transforms', () => {
+    expect(css).toMatch(/button:active \{[^}]*transform: translateY\(1px\)/)
+    expect(css).not.toMatch(/:hover[^}]*transform:\s*scale/)
+  })
+
+  it('styles accessible dark-theme primary buttons via on-primary text color', () => {
+    expect(css).toMatch(/:root\[data-theme="dark"\] \{[^}]*--on-primary: #0/)
+  })
+})
