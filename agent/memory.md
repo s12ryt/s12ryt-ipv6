@@ -148,3 +148,11 @@
 - 使用者要求「再仔細翻翻」之第二輪深查（fd 洩漏／崩潰殘餘）：UDP relay mapping 生命週期（idle deadline 清理＋association 結束 closeMappings 全關）、DoT 每查詢連線由 `ExchangeContext` 自動關閉、port allocator 探測/預約 socket 全路徑關閉、network netlink 採 package-level 共享介面——全部排除洩漏。
 - firewall nftables 虛警澄清（重要教訓）：曾以 RED 測試（WSL 執行交叉編譯的 Linux test binary，實測 closed=0）懷疑 `nftables.New()` 每交易洩漏 netlink fd；查 module source（nftables v0.3.0 conn.go L68、L138-147、L256-260）後確認 **transient 模式下 `New()` 不開 socket，每操作由庫臨時 dial 並 `defer closer()` 自動關閉**，僅 `AsLasting()` 需要 `CloseLasting`。backend 無洩漏，測試已撤銷並以 WSL 實跑全套 PASS 驗證還原。
 - 剩餘低暴露缺口列建議未修：control socket agent 指令處理無 panic 防護（僅本機 root 可達 0600 socket，暴露度低）。崩潰最可能成因維持先前已修兩項：代理連線 panic（已隔離）與 dns64 快取無限成長（已上限）。
+
+## 2026-08-25（第三輪）：角落深查（協定逾時／持久化／SSE／池）
+
+- 觸發：使用者「翻翻那些你可能不會在意或沒看到的」。鎖定前兩輪未覆蓋面：協定層時間邊界、SSE 慢消費者、共享物件併發、持久化原子性、前端 API 行為。期間依使用者指示完成上下文壓縮（180 則訊息→6 段摘要）。
+- 正面確認（零變更）：三協定握手逾時正確套用與清除；HTTP `authorized()` constant-time 比較、`httpProxyTarget` 限 absolute-form http 且拒 userinfo；`relayConnections` 的 `tunnelDeadlineRefresher` 以 mutex 刷新雙向 deadline、`stopWatch` channel 正確收尾、`CloseWrite` half-close；SSE `validateEvent` 擋 `\r\n`（防回應注入）+ `json.Marshal` 轉義 + `Publish` drop-oldest 有界佇列；`SourcePool` Acquire 只選 current、Replace 未活動地址即時回收/活動中進 draining、ForceDrain 鎖外逐一 force、Release `once` 防重複、Attach 失敗路徑全關 closer；正式狀態檔全部 CreateTemp→Chmod 0600→Write→Sync→Close→Rename 原子寫（config.go L161-197 為範本），vault `O_EXCL` 一次建檔；web `api.ts` 無自動重試循環、subscribe close 冪等；`main.go` `signal.NotifyContext` 貫穿 RunProduction。
+- 新觀察 A（中低，列建議未修）：eventlog `Tail` 與 `Write` 共用 mutex，Tail 持鎖解碼最多 5×100MB 期間，所有代理連線關閉的 proxy 事件寫入（TrafficObserver 在連線 goroutine 內同步呼叫 Write）排隊——管理頁查日誌時「關閉中連線」延遲 spike；不影響新連線接受、無洩漏無崩潰、單人管理情境查詢頻率極低。若未來要修：Tail 改為 snapshot 檔案集合後無鎖掃描（弱化跨檔一致性保證），需先建立穩定的併發量測測試（Mutex 無外部持鎖觀測點，直接斷言互斥順序不穩定）。
+- 新觀察 B（低，列建議未修）：`rotateLocked` 若 rename 鏈完成後 reopen 失敗（磁碟滿/IO 錯誤），`l.file` 保持已 Close handle，後續每筆 Write 持續報錯直到重啟；錯誤經 report 回呼隔離、file 從不設 nil 故無 panic 風險，且會被代理 dispatch recover 與 net/http 內建 recover 兜住。修復需注入檔案系統錯誤的測試介面（Logger 直用 os 包），改造成本高於收益。
+- 本輪零程式碼變更；`go test`/工作樹無異動，僅治理紀錄更新與提交。

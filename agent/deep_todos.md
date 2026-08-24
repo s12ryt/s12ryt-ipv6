@@ -117,3 +117,13 @@
 - [x] TDD 修復 dns64 快取無上限（4096 上限＋過期優先／最早到期淘汰）。
 - [x] TDD 修復代理連線 goroutine 無 panic 防護（dispatch recover，單連線錯誤化）。
 - [x] 完整回歸（15 packages／vet／雙架構交叉建置）、治理紀錄更新並推送。
+
+## 2026-08-25：穩定性第三輪深查（角落掃描，零程式碼變更）
+
+- [x] 逐項驗證三種入站協定握手逾時（SOCKS5 L67/L95、HTTP L76/L106、mixed L49/L57）皆正確套用與清除，慢攻擊防護完備。
+- [x] 驗證 HTTP 非 CONNECT 轉送（constant-time 認證、absolute-form 限制、拒 userinfo）、relayConnections idle deadline refresher、SSE validateEvent 擋換行注入與 drop-oldest 有界佇列。
+- [x] 驗證 SourcePool 租借／排空／強制終止狀態機（鎖外 callback、once 防重複釋放、Attach 失敗全關 closer）。
+- [x] 驗證全部正式狀態檔（config／stats／nodes／resources／ownership／admin-password）皆 temp+sync+rename 原子持久化，vault O_EXCL 一次建檔。
+- [x] 驗證前端 api.ts 無重試風暴、EventSource 關閉冪等，與 main.go 訊號 context 正確貫穿。
+- [x] 新增兩項中低嚴重度觀察列建議未修：eventlog Tail 持鎖全量解碼使查詢期間代理關閉事件寫入排隊（延遲 spike、無崩潰）；rotate 中途 reopen 失敗致日誌寫入持續報錯至重啟（錯誤已隔離、無 panic）。
+- [x] 結論：本輪無高嚴重度缺陷，僅更新治理紀錄。
