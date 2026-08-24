@@ -107,3 +107,23 @@
 - 完整驗證：前端 13 個 test files／63 項測試、ESLint、TypeScript與Vite production build、web embed test、Go全部套件測試與 `go vet`、shell語法、installer/release契約測試均通過。系統未安裝獨立 `goreleaser`，改以 `go run github.com/goreleaser/goreleaser/v2@v2.17.1 check` 驗證，使用自動下載的 Go 1.26.5 toolchain確認1份組態有效。
 - 品質審查確認 LICENSE 含完整第0至17條、第13條遠端網路互動義務、第14條後續版本選項、免責與附錄；前端build沒有造成額外追蹤檔變更。未執行既有Release重發或真實GitHub Actions發布，符合已確認範圍。
 - 授權核心、Web SPDX、Release封裝與治理紀錄分別提交為 `79bd31e`、`d611785`、`6b3f8e1`、`60f10ff`；透過現有 GitHub CLI 憑證的一次性 WSL credential helper 一般推送至 `origin/main`，未寫入 Git 設定。推送後本機 `HEAD`、`origin/main` 與 GitHub 遠端均為 `60f10ff8357cb3aabd2ace3cd3a31657c91e2a7e`，工作樹乾淨。
+
+## 2026-08-24
+
+- 接手時確認本機 `main`、`origin/main` 與 GitHub 遠端均為 `76a1d19`，工作樹乾淨；Go全套測試、vet、前端63項測試/lint/build、web embed、installer/release shell測試與Linux amd64/arm64交叉build基線均通過。Windows環境仍無法執行真實Linux root/netns integration、Docker、race detector與本機GoReleaser。
+- 完成本機 Agent CLI 需求澄清並記於 `agent/question.md` 第24節。入口固定為 `s12ryt-ipv6 agent ...`，透過root擁有的0600 Unix control socket呼叫正式Resource/Node/Operations/Config服務，不直接改YAML、不經明文HTTP；一般stdout為單一JSON，schema/export成功直接輸出文件。
+- 以TDD將control protocol由4 KiB擴至4 MiB，新增泛用agent RPC、嚴格單JSON/unknown field拒絕、transport與business envelope分層、permission cause保留、requested timeout與30分鐘server cap。品質審查另修復apply預設10分鐘仍會被server 30秒截斷，以及Serve取消無法中止進行中handler的關機延遲。
+- 以TDD新增完整Draft 2020-12 strict schema、JSON/YAML export/apply、settings欄位級合併、active/configured與restart_required、遮罩帳密round-trip，以及resources/nodes/network/logs/stats完整命令樹。所有刪除、prune、force-drain、清除日誌與重設統計均要求非互動`--yes`。
+- Apply採全文預檢後依序執行，失敗回報已完成項目且保留各正式service既有rollback。穩定性回歸修復跨領域node/resource錯誤引用、prune刪除保留node依賴、prune資源圖借用即將刪除依賴、existing pool default/pinned錯判，以及dry-run `authentication.generate`仍消耗entropy；credential generator失敗會在任何設定或runtime mutation前停止且不洩漏底層錯誤。
+- CLI支援完整樹狀命令、JSON stdin/file、apply/export明示JSON或YAML、4 MiB限制、單文件嚴格解析、1秒至30分鐘timeout、固定錯誤碼與退出碼、`--show-secrets`及health非healthy退出1。回歸另修復未公開命令被誤接受、無參命令忽略arguments、混合批次無認證確認與YAML數值型別。
+- Production builder將AgentService接入control socket；一鍵與離線安裝器在HTTP health後驗證Agent status，結構有效的degraded仍成功，socket/權限/逾時/無效JSON/錯誤envelope會完整回滾。Agent health shell parser拒絕prefix/trailing/error偽成功，成功後輸出status/schema/JSON與YAML export及安全dry-run quickstart。
+- 本輪RED證據包含缺少AgentService/ConfigStore.Replace/control API、unsupported命令、缺CLI route/parser、production control不支援agent、server timeout契約缺失、installer缺agent gate/quickstart，以及穩定性缺陷的可重現測試；各項均由最小GREEN與鄰近回歸保護。
+- 最終驗證全部通過：`go test ./... -count=1 -timeout=300s`、`go vet ./...`、前端13個test files／63項測試、ESLint、Vite 8.2.0 production build、web embed test、shell語法、installer與release契約測試。另以`CGO_ENABLED=0`成功交叉建置Linux amd64／arm64主程式，並編譯兩架構的network/firewall integration test binaries；`go version -m`確認GOOS/GOARCH、revision `76a1d19fd3665da92f83c662e05c572de510896c`與工作樹尚未提交所預期的`vcs.modified=true`。
+- Windows環境未執行需要root、disposable network namespace與nftables的真實Linux integration runtime；本機也無Docker、獨立GoReleaser與GCC，因此未執行容器建置、GoReleaser發布流程與race detector。交叉編譯僅證明兩架構可編譯，不取代Linux實機網路行為驗證。
+
+## 2026-08-25
+
+- 接手確認：HEAD `76a1d19` 與 `origin/main` 一致，但 8/24 的 Agent CLI 全部變更（16 個修改 + 8 個新檔）尚未提交，工作樹為完成待收尾狀態。
+- 重建基線全部通過：`go test ./... -count=1 -timeout=300s`（15 packages）、`go vet ./...`、前端 13 files／63 tests、ESLint、Vite production build、`deploy/install_test.sh`、`deploy/release_test.sh`、根與 deploy shell 語法檢查，以及 `CGO_ENABLED=0` Linux amd64/arm64 交叉建置。
+- 發現 `NodesView` 的 SSE `waitFor` 測試在與 Go build/vet 並行搶 CPU 時會暫態超時（首次 49s、單獨重跑 12s 全綠）；之後執行前端測試應避免與重編譯並行，避免誤判為缺陷。
+- 依使用者指示以 7 筆依賴有序原子提交收尾 8/24 工作（control 擴充、config replace、agent service、production 接線、agent CLI、安裝器 agent gate、文件與治理紀錄）並推送 `origin/main`。

@@ -83,3 +83,15 @@
 - [x] 執行 Release 契約、Go／前端完整回歸、lint、vet、build 與 GoReleaser v2 組態驗證。
 - [x] 完成品質審查及治理紀錄更新。
 - [x] 以五筆原子提交完成紀錄收尾並一般推送至 `origin/main`，確認本機、追蹤分支與 GitHub 遠端 SHA 一致。
+
+## 2026-08-24：本機 Agent CLI 與一鍵安裝整合
+
+- [x] 完成 CLI、control socket、apply/export/schema、安全、設定生效與安裝回滾需求澄清。
+- [x] 將確認契約寫入 `agent/question.md` 第 24 節。
+- [x] 建立相關 Go 與安裝器測試基線。
+- [x] 以 TDD 擴充 4 MiB control protocol 與泛用 agent RPC。
+- [x] 以 TDD 實作 agent schema、export、apply 與 settings 合併。
+- [x] 以 TDD 實作完整命令式資源、節點、網路、日誌與統計操作。
+- [x] 以 TDD 實作 `s12ryt-ipv6 agent ...` parser、機器輸出、錯誤與 timeout。
+- [x] 以 TDD 整合一鍵安裝 agent gate、回滾與 quickstart。
+- [x] 更新 README 與治理紀錄，完成完整回歸、品質審查及 Linux 雙架構建置。

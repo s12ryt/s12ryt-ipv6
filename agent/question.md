@@ -1,6 +1,6 @@
 # s12ryt-ipv6 首版需求與驗收契約
 
-更新日期：2026-08-05
+更新日期：2026-08-24
 狀態：使用者已確認，作為首版實作與驗收的唯一依據。
 
 ## 1. 產品範圍
@@ -9,7 +9,7 @@
 - 後端採 Go 模組化單體；不得依賴 sing-box 等外部代理核心。
 - 可使用必要 Go 函式庫。`github.com/things-go/go-socks5` 僅用於 SOCKS5 協商、認證與封包解析；TCP CONNECT 與 UDP ASSOCIATE 資料路徑由本專案接管。
 - 管理介面採繁體中文 React + TypeScript + Vite SPA，產物由 Go embed，不需要 Node.js runtime。
-- 首版不做設定匯入/匯出、SOCKS5 BIND、HTTPS 管理入口或自動 TLS。
+- Web 管理面不做設定匯入/匯出；本機 agent CLI 依第 24 節提供宣告式 apply/export。仍不做 SOCKS5 BIND、HTTPS 管理入口或自動 TLS。
 
 ## 2. 節點與協定
 
@@ -261,3 +261,55 @@
 - GoReleaser 的後續 `tar.gz` 發布封裝必須包含根 `LICENSE`；裸 binary 與 checksum 發布形式維持不變。
 - 不加入全專案逐檔授權標頭，不修改、刪除或重發既有 `v0.1.2` Release；授權變更自本次 `main` 提交及其後版本生效。
 - 驗收需以發布契約測試證明 `LICENSE`、README 與 npm SPDX 宣告一致，並以 GoReleaser 設定檢查證明封裝有效；完成後建立原子提交並以一般 push 推送 `origin/main`，不得改寫歷史或強制推送。
+
+## 24. 本機 Agent CLI 與一鍵安裝整合
+
+### 24.1 入口、通道與輸出契約
+
+- 一鍵安裝後由同一個 `/usr/local/bin/s12ryt-ipv6` 提供 `s12ryt-ipv6 agent ...`，不新增 MCP server 或另一個常駐程序。
+- agent CLI 只透過資料目錄中的 0600 Unix control socket 呼叫運行中的正式 service；不得繞過 runtime 直接修改 YAML。執行者必須為 root 或可透過 `sudo` 存取 socket 的管理者。
+- 既有 `serve`、`version`、`admin`、`config` 命令及其文字輸出維持相容；只有 `agent` 命令使用機器可讀契約。
+- 一般成功輸出單一 `{ "ok": true, "data": ... }` JSON；`schema` 與成功的 `export` 直接輸出文件，不包 envelope。所有失敗均在 stdout 輸出單一 `{ "ok": false, "error": { "code": "...", "message": "...", "details": ... } }` JSON，不得洩漏帳密、session、CSRF 或任意內部錯誤內容。
+- 固定錯誤碼為 `invalid_usage`、`invalid_document`、`confirmation_required`、`unavailable`、`permission_denied`、`not_found`、`conflict`、`operation_failed`、`internal_error`。
+- 程序退出碼：成功 `0`；用法或 schema/document 錯誤 `2`；socket 不可用或權限錯誤 `3`；業務衝突、找不到或拒絕操作 `4`；內部、執行或非健康狀態失敗 `1`。
+- control request/response 上限由 4 KiB 提升為 4 MiB，繼續拒絕未知欄位、多個 JSON 值與超限訊息。查詢／單步操作預設 timeout 30 秒，apply 預設 10 分鐘；全域 `--timeout` 接受 1 秒至 30 分鐘，server 一律以 30 分鐘為硬上限。
+
+### 24.2 命令樹
+
+- 頂層：`status`、`schema`、`export`、`apply`。
+- 資源：`resources list`；`resources template create|delete`；`resources fixed create|delete`；`resources pool create|delete|refresh|force-drain`。
+- 節點：`nodes list|get|create|update|delete|start|stop|batch-create|move`。
+- 資料夾：`folders rename|start|stop|delete`。
+- 網路：`network show|test|nat64 set|clear|resolvers replace`。
+- 日誌與統計：`logs tail|clear`；`stats show|reset`。
+- 複合 create/update/replace 輸入採 JSON 文件，使用 `--file PATH`；`--file -` 或省略 `--file` 時從 stdin 讀取。ID、name、folder、filter 等簡單 selector 可使用 flag；密碼不得出現在命令列 flag。
+- `--show-secrets` 適用於 `export` 及 `nodes list|get|create|update|batch-create`；預設輸出必須遮罩密碼。
+- 所有刪除、`--prune`、pool 強制排空、清除日誌及重設統計都必須明示 `--yes`，不得進行互動提示；缺少確認時回 `confirmation_required` 且零修改。
+
+### 24.3 Apply、Export 與 Schema
+
+- `schema` 直接輸出 JSON Schema Draft 2020-12；apply/export 文件包含 `schema_version: 1`，拒絕未知欄位、多文件 YAML 及多個 JSON 值。
+- `apply` 與 `export` 都強制要求 `--format json|yaml`，不得依副檔名、stdin 或終端自動偵測。JSON export 可直接 pipe 至 `apply --format json`；YAML export 可直接輸出 stdout 並 pipe 至 `apply --format yaml`。即使要求 YAML，任何失敗仍輸出統一 JSON error。
+- 文件分為可選的 `settings`、`resources`、`nodes`、`network` 頂層區段。`network` 管理 NAT64 與 resolvers；logs/stats 只提供命令式操作，不得納入 apply。
+- apply 先嚴格解析並預檢整份文件、引用、衝突、上限、確認條件及執行計畫，預檢失敗時零修改。預檢通過後依計畫順序執行，首個錯誤停止；各既有 operation 保持自身交易／rollback，不要求跨 settings、resources、nodes、network 的全域 rollback。回應必須列出 `completed` 與失敗項目。
+- `apply --dry-run` 必須執行相同完整預檢並回傳計畫，但不得修改檔案、runtime、Linux 網路、防火牆、日誌或統計；dry-run 即使與 `--prune` 併用也不要求 `--yes`。
+- apply 預設保留文件中未列出的現有物件；只有 `--prune --yes` 刪除未列出的資源／節點。prune 只影響文件中明示存在的 `resources` 或 `nodes` 區段，整段省略時完全不變。
+- template、fixed、pool 以名稱識別；同名且定義相同視為已收斂，同名但定義不同必須在整份預檢階段回 `conflict`，首版不得自動刪除重建或換址。
+- node 以固定不可變 `id` 識別；每個 apply node 必須含 `desired_status: running|stopped`。同 ID 依文件更新可變欄位後收斂狀態；prune 刪除節點時沿用既有專用池清理與錯誤語意。
+
+### 24.4 帳密、預設值與設定生效
+
+- node authentication 使用明確 action：`set` 必須提供 username/password；`generate` 為新節點或明確旋轉產生新帳密；`preserve` 只允許既有節點且不得改變帳密。`mode: none` 必須同時提供 `confirm_unauthenticated: true`。
+- 預設遮罩 export 對有認證節點輸出 `preserve`，因此可直接 round-trip 而不旋轉帳密；`export --show-secrets` 改輸出 `set` 與明文帳密。遮罩後不得以星號假密碼回寫。
+- 新 pool 省略 capacity 時，依 kind 使用全域 pool defaults；新 node 省略 limits/timeouts 時使用全域 defaults。更新既有 pool/node 時，省略欄位一律保留現值，不得套用新預設覆蓋。
+- `settings` 納入既有 config schema 的所有全域設定，採欄位級合併；省略欄位保持現值。`allow_ula` 及供 agent 新物件使用的 pool/limits/timeouts defaults 即時生效。
+- management port、node/relay port range、max nodes，以及只在 production build 建立的 resolver/query/connectivity dial timeout 等 startup-only 欄位，只安全持久化，不由 CLI 呼叫 systemctl。成功回應必須精確列出 `changed_fields`、即時生效欄位及 `restart_required` 欄位；重新啟動後 active/configured 值才一致。
+- `agent status` 回報 control 可用性、服務 health、active/configured 設定差異與 pending restart。socket 可連線但 health 為 degraded/unhealthy 時仍輸出有效資料，但退出碼為 `1`。
+
+### 24.5 一鍵安裝與驗收
+
+- 根 `install.sh` 先完成既有交易式 binary/unit/config 安裝並通過 HTTP `/healthz`，再執行新 binary 的 `agent status` 驗證 control 通道與 JSON schema。
+- HTTP health 為 `healthy` 或 `degraded` 且 agent status 回傳結構有效時，安裝可成功；degraded 導致 agent 自身退出 `1` 不得誤判為通道故障。socket／權限錯誤、逾時、無效 JSON、錯誤 envelope 或命令執行故障必須觸發既有完整升級／首次安裝回滾。
+- 安裝成功後輸出不含秘密的 quickstart，至少展示 `agent status`、`agent schema`、JSON/YAML export，以及 export pipe 至 dry-run/apply 的明示格式命令；安裝器不接收或自動套用初始 agent 配置。
+- TDD 驗收至少證明：control 4 MiB 邊界與嚴格解析；命令樹、JSON envelope、固定錯誤碼／退出碼；JSON/YAML schema/export/apply round-trip；遮罩 export 不旋轉帳密；show-secrets 明文只在明示時出現；dry-run 零修改；所有破壞操作缺 `--yes` 時拒絕；prune 只影響明示區段；同名異定義資源在任何執行前拒絕；node ID 與 desired status 收斂；settings merge/default/restart_required；單步及 apply timeout；安裝器 agent gate 成功、degraded、故障回滾與 quickstart。
+- 最終需執行受影響 Go/shell 測試、完整 `go test ./...`、`go vet ./...`、前端既有 test/lint/build、shell 語法與 installer/release 測試、Linux amd64/arm64 交叉 build；環境不可用的 Linux root/netns、Docker、race 或 GoReleaser runtime 驗證須如實列為殘餘風險。

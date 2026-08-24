@@ -27,7 +27,7 @@ curl -fsSL https://raw.githubusercontent.com/s12ryt/s12ryt-ipv6/main/install.sh 
 curl -fsSL https://raw.githubusercontent.com/s12ryt/s12ryt-ipv6/main/install.sh | sudo env VERSION=v1.2.3 DATA_DIR=/srv/s12ryt-ipv6 MANAGEMENT_PORT=45555 sh
 ```
 
-安裝器僅支援 Debian 12/13、Ubuntu 24.04，以及 `amd64`、`arm64`。它會從 GitHub Release 下載檔案、核對 `checksums.txt`，再安裝並啟用 systemd 服務；重複執行即安全升級。若新版本未在 120 秒內回報 `healthy` 或 `degraded`，binary、systemd unit 與設定會回滾並重新驗證舊服務。
+安裝器僅支援 Debian 12/13、Ubuntu 24.04，以及 `amd64`、`arm64`。它會從 GitHub Release 下載檔案、核對 `checksums.txt`，再安裝並啟用 systemd 服務；重複執行即安全升級。新版本必須在 120 秒內通過 HTTP health 與本機 Agent control socket 兩道檢查；任一道失敗時，binary、systemd unit 與設定會回滾並重新驗證舊服務。`healthy` 與結構有效的 `degraded` 都視為服務已啟動，安裝成功後會列出不含秘密的 Agent CLI quickstart。
 
 `VERSION` 預設為 `latest`；未設定 `MANAGEMENT_PORT` 時，升級會保留既有管理埠，首次安裝使用 `34466`。安裝器只會在 UFW 已安裝且已啟用時新增實際管理埠規則，絕不啟用 UFW，也不修改 IPv6 route。首次管理密碼只會從本次服務啟動後的 journal 擷取並顯示一次；若未取得，請執行下方的密碼重設命令。
 
@@ -64,9 +64,52 @@ sudo ./s12ryt-ipv6 serve --data-dir /etc/s12ryt-ipv6
 sudo s12ryt-ipv6 admin reset-password --data-dir /etc/s12ryt-ipv6
 ```
 
+## 本機 Agent CLI
+
+`s12ryt-ipv6 agent ...` 是供本機 Agent、自動化腳本及管理員使用的機器介面。它直接連到資料目錄內權限為 `0600` 的 `control.sock`，不經明文 HTTP 管理介面、session 或 CSRF；預設資料目錄下必須以 root 或 `sudo` 執行。一般成功與所有失敗都只在 stdout 輸出單一 JSON，`schema` 與 `export` 成功時則直接輸出文件。
+
+先確認服務與可用 schema：
+
+```sh
+sudo s12ryt-ipv6 agent status --data-dir /etc/s12ryt-ipv6
+sudo s12ryt-ipv6 agent schema --data-dir /etc/s12ryt-ipv6 > agent-schema.json
+```
+
+匯出預設會以 `authentication.action: preserve` 遮罩節點帳密，因此文件可安全 round-trip，不會旋轉既有帳密。只有明示 `--show-secrets` 才輸出明文帳密；應避免將該輸出寫入日誌、版本庫或不受保護的暫存檔。
+
+```sh
+sudo s12ryt-ipv6 agent export --format json --data-dir /etc/s12ryt-ipv6 > agent-config.json
+sudo s12ryt-ipv6 agent export --format yaml --data-dir /etc/s12ryt-ipv6 > agent-config.yaml
+sudo s12ryt-ipv6 agent export --format yaml --data-dir /etc/s12ryt-ipv6 \
+  | sudo s12ryt-ipv6 agent apply --format yaml --dry-run --data-dir /etc/s12ryt-ipv6
+```
+
+套用文件時必須明示 JSON 或 YAML 格式。`--dry-run` 會完成整份文件、資源依賴與節點引用預檢但不修改狀態；預設保留文件未列出的物件。只有 `--prune --yes` 會刪除文件中明示區段的未列物件，省略的整個區段不受影響。
+
+```sh
+sudo s12ryt-ipv6 agent apply --format yaml --file ./agent-config.yaml --dry-run --data-dir /etc/s12ryt-ipv6
+sudo s12ryt-ipv6 agent apply --format yaml --file ./agent-config.yaml --data-dir /etc/s12ryt-ipv6
+sudo s12ryt-ipv6 agent apply --format yaml --file ./agent-config.yaml --prune --yes --data-dir /etc/s12ryt-ipv6
+```
+
+命令範圍：
+
+| 範圍 | 命令 |
+| --- | --- |
+| 狀態與宣告 | `status`、`schema`、`export`、`apply` |
+| IPv6 資源 | `resources list`；`template create/delete`；`fixed create/delete`；`pool create/delete/refresh/force-drain` |
+| 節點 | `nodes list/get/create/update/delete/start/stop/batch-create/move` |
+| 資料夾 | `folders rename/start/stop/delete` |
+| 網路 | `network show/test`；`nat64 set/clear`；`resolvers replace` |
+| 觀察與維護 | `logs tail/clear`；`stats show/reset` |
+
+複合的 create/update/batch/resolver 輸入使用 JSON `--file PATH`，`--file -` 或省略時讀 stdin；簡單 selector 使用 `--id`、`--name`、`--folder` 等旗標。所有 delete、`force-drain`、`logs clear`、`stats reset` 與 apply `--prune` 都要求 `--yes`，CLI 不會顯示互動提示。單步命令預設逾時 30 秒，apply 預設 10 分鐘，可用 `--timeout` 覆寫為 1 秒至 30 分鐘。
+
+全域設定採欄位級合併。管理埠、代理埠範圍、最大節點數與 production 啟動期 dial timeout 等變更會安全保存並在回應列為 `restart_required`，CLI 不會自行呼叫 systemd；重新啟動後 `status` 的 active/configured 值才會一致。`degraded` 或 `unhealthy` 的 `status` 仍輸出有效 JSON，但退出碼為 `1`。
+
 ## 離線 systemd 安裝
 
-建置 binary 後，可用封裝內的離線安裝器；它與一鍵安裝器共用停止、健康檢查與回滾流程：
+建置 binary 後，可用封裝內的離線安裝器；它與一鍵安裝器共用停止、HTTP/Agent 健康檢查與回滾流程：
 
 ```sh
 sudo sh deploy/install.sh ./s12ryt-ipv6
