@@ -14,6 +14,9 @@ const (
 	ULADeny    ULAOverride = "deny"
 )
 
+// DestinationPolicy 描述單一出站連線的目的地判定政策。
+// LocalAddresses 與 ManagedAddresses 為唯讀共享視圖：呼叫方不得寫入或
+// 刪除其中的條目（提供者以不可變快照替換方式更新內容）。
 type DestinationPolicy struct {
 	AllowULA         bool
 	NAT64Prefix      netip.Prefix

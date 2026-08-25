@@ -79,10 +79,14 @@ func (p *PolicyProvider) Sync(state ipv6resource.State) error {
 	return nil
 }
 
+// Policy 回傳目前的目的地政策。LocalAddresses 與 ManagedAddresses 是
+// 唯讀共享視圖：內部快照以 build-new-then-swap 發佈、發佈後不可變，
+// 呼叫方不得修改回傳的 map；每個出站連線都會呼叫此方法，避免逐次複製
+// 大型地址集的資料路徑成本。
 func (p *PolicyProvider) Policy() policy.DestinationPolicy {
 	p.mu.RLock()
-	local := cloneAddressSet(p.localAddresses)
-	managed := cloneAddressSet(p.managedAddresses)
+	local := p.localAddresses
+	managed := p.managedAddresses
 	p.mu.RUnlock()
 	configuration := p.configuration()
 	return policy.DestinationPolicy{
@@ -91,14 +95,6 @@ func (p *PolicyProvider) Policy() policy.DestinationPolicy {
 		LocalAddresses:   local,
 		ManagedAddresses: managed,
 	}
-}
-
-func cloneAddressSet(source map[netip.Addr]struct{}) map[netip.Addr]struct{} {
-	clone := make(map[netip.Addr]struct{}, len(source))
-	for address := range source {
-		clone[address] = struct{}{}
-	}
-	return clone
 }
 
 var _ interface {
