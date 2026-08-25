@@ -10,28 +10,39 @@ import (
 	"time"
 )
 
-type drainCompletion struct {
-	pool    string
-	address netip.Addr
+type drainBatchCompletion struct {
+	pool      string
+	addresses []netip.Addr
 }
 
 type recordingDrainCompleter struct {
 	mu          sync.Mutex
-	completions []drainCompletion
+	completions []drainBatchCompletion
 	err         error
 }
 
-func (c *recordingDrainCompleter) CompleteDrainedAddress(_ context.Context, pool string, address netip.Addr) error {
+func (c *recordingDrainCompleter) CompleteDrainedAddresses(_ context.Context, pool string, addresses []netip.Addr) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.completions = append(c.completions, drainCompletion{pool: pool, address: address})
+	c.completions = append(c.completions, drainBatchCompletion{
+		pool:      pool,
+		addresses: append([]netip.Addr(nil), addresses...),
+	})
 	return c.err
 }
 
-func (c *recordingDrainCompleter) snapshot() []drainCompletion {
+func (c *recordingDrainCompleter) snapshot() []drainBatchCompletion {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return append([]drainCompletion(nil), c.completions...)
+	return append([]drainBatchCompletion(nil), c.completions...)
+}
+
+func (c *recordingDrainCompleter) completedAddresses() int {
+	total := 0
+	for _, batch := range c.snapshot() {
+		total += len(batch.addresses)
+	}
+	return total
 }
 
 func TestDrainQueueProcessesEveryEnqueuedAddressInOrder(t *testing.T) {
@@ -48,12 +59,44 @@ func TestDrainQueueProcessesEveryEnqueuedAddressInOrder(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- queue.Run(ctx) }()
-	waitForDrainCompletions(t, completer, 2)
+	waitForDrainAddresses(t, completer, 2)
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("Run() = %v", err)
 	}
-	want := []drainCompletion{{pool: "shared", address: first}, {pool: "shared", address: second}}
+	want := []drainBatchCompletion{{pool: "shared", addresses: []netip.Addr{first, second}}}
+	if got := completer.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("completions = %#v, want %#v", got, want)
+	}
+}
+
+func TestDrainQueueGroupsCompletionsByPool(t *testing.T) {
+	completer := &recordingDrainCompleter{}
+	queue, err := NewDrainQueue(completer, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := netip.MustParseAddr("2001:4860:1::1")
+	second := netip.MustParseAddr("2001:4860:1::2")
+	third := netip.MustParseAddr("2001:4860:1::3")
+	dedicated := netip.MustParseAddr("2001:4860:9::7")
+	queue.Enqueue("shared", first)
+	queue.Enqueue("shared", second)
+	queue.Enqueue("dedicated", dedicated)
+	queue.Enqueue("shared", third)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- queue.Run(ctx) }()
+	waitForDrainAddresses(t, completer, 4)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	want := []drainBatchCompletion{
+		{pool: "shared", addresses: []netip.Addr{first, second, third}},
+		{pool: "dedicated", addresses: []netip.Addr{dedicated}},
+	}
 	if got := completer.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("completions = %#v, want %#v", got, want)
 	}
@@ -89,14 +132,14 @@ func TestDrainQueueDoesNotBlockProducerAndReportsFailures(t *testing.T) {
 	}
 }
 
-func waitForDrainCompletions(t *testing.T, completer *recordingDrainCompleter, count int) {
+func waitForDrainAddresses(t *testing.T, completer *recordingDrainCompleter, count int) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if len(completer.snapshot()) >= count {
+		if completer.completedAddresses() >= count {
 			return
 		}
 		time.Sleep(time.Millisecond)
 	}
-	t.Fatalf("completion count = %d, want at least %d", len(completer.snapshot()), count)
+	t.Fatalf("completed addresses = %d, want at least %d", completer.completedAddresses(), count)
 }

@@ -9,12 +9,17 @@ import (
 )
 
 type DrainedAddressCompleter interface {
-	CompleteDrainedAddress(context.Context, string, netip.Addr) error
+	CompleteDrainedAddresses(context.Context, string, []netip.Addr) error
 }
 
 type drainedAddress struct {
 	pool    string
 	address netip.Addr
+}
+
+type drainedAddressGroup struct {
+	pool      string
+	addresses []netip.Addr
 }
 
 type DrainQueue struct {
@@ -59,13 +64,28 @@ func (q *DrainQueue) Run(ctx context.Context) error {
 		q.mu.Unlock()
 
 		var failures []error
-		for _, item := range batch {
-			if err := q.completer.CompleteDrainedAddress(ctx, item.pool, item.address); err != nil {
-				failures = append(failures, fmt.Errorf("complete drained address %s in pool %q: %w", item.address, item.pool, err))
+		for _, group := range groupDrainedAddressesByPool(batch) {
+			if err := q.completer.CompleteDrainedAddresses(ctx, group.pool, group.addresses); err != nil {
+				failures = append(failures, fmt.Errorf("complete %d drained addresses in pool %q: %w", len(group.addresses), group.pool, err))
 			}
 		}
 		if err := errors.Join(failures...); err != nil {
 			q.report(err)
 		}
 	}
+}
+
+func groupDrainedAddressesByPool(batch []drainedAddress) []drainedAddressGroup {
+	groups := make([]drainedAddressGroup, 0)
+	indexByPool := make(map[string]int)
+	for _, item := range batch {
+		index, seen := indexByPool[item.pool]
+		if !seen {
+			index = len(groups)
+			indexByPool[item.pool] = index
+			groups = append(groups, drainedAddressGroup{pool: item.pool})
+		}
+		groups[index].addresses = append(groups[index].addresses, item.address)
+	}
+	return groups
 }

@@ -291,6 +291,168 @@ func TestResourceCoordinatorCommitsNaturallyDrainedAddress(t *testing.T) {
 	}
 }
 
+func TestResourceCoordinatorCommitsDrainedAddressesInSingleTransaction(t *testing.T) {
+	persisted := resourceStateWithPool(t, true)
+	stateStore := &memoryResourceStateStore{state: persisted, exists: true}
+	networkManager := &fakeResourceNetwork{}
+	runtime := &fakeResourceRuntime{}
+	service, err := NewResourceCoordinator(stateStore, networkManager, &fakeDrainTerminator{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetRuntimeSynchronizer(runtime); err != nil {
+		t.Fatal(err)
+	}
+	batch := persisted.Pools[0].Draining[0]
+
+	if err := service.CompleteDrainedAddresses(context.Background(), "shared", batch.Addresses); err != nil {
+		t.Fatal(err)
+	}
+	if stateStore.saves != 1 || len(networkManager.calls) != 1 || len(runtime.calls) != 1 {
+		t.Fatalf("batched drain transaction calls: saves=%d network=%d runtime=%d", stateStore.saves, len(networkManager.calls), len(runtime.calls))
+	}
+	snapshot := service.Snapshot()
+	if len(snapshot.Pools[0].Draining) != 0 {
+		t.Fatalf("remaining drain = %#v", snapshot.Pools[0].Draining)
+	}
+	for _, address := range batch.Addresses {
+		for _, canonical := range snapshot.Addresses {
+			if canonical.Address == address {
+				t.Fatalf("drained address %s remained", address)
+			}
+		}
+	}
+}
+
+func TestResourceCoordinatorBatchCompletionSkipsFinishedAndDuplicateAddresses(t *testing.T) {
+	persisted := resourceStateWithPool(t, true)
+	stateStore := &memoryResourceStateStore{state: persisted, exists: true}
+	service, err := NewResourceCoordinator(stateStore, &fakeResourceNetwork{}, &fakeDrainTerminator{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetRuntimeSynchronizer(&fakeResourceRuntime{}); err != nil {
+		t.Fatal(err)
+	}
+	batch := service.Snapshot().Pools[0].Draining[0]
+	finished, remaining := batch.Addresses[0], batch.Addresses[1]
+
+	if err := service.CompleteDrainedAddress(context.Background(), "shared", finished); err != nil {
+		t.Fatal(err)
+	}
+	saves := stateStore.saves
+
+	if err := service.CompleteDrainedAddresses(context.Background(), "shared", []netip.Addr{finished, remaining, remaining}); err != nil {
+		t.Fatalf("mixed batch completion = %v", err)
+	}
+	if stateStore.saves != saves+1 {
+		t.Fatalf("saves = %d, want %d", stateStore.saves, saves+1)
+	}
+	if snapshot := service.Snapshot(); len(snapshot.Pools[0].Draining) != 0 {
+		t.Fatalf("remaining drain = %#v", snapshot.Pools[0].Draining)
+	}
+}
+
+func TestResourceCoordinatorIgnoresBatchCompletionWhenNothingDraining(t *testing.T) {
+	persisted := resourceStateWithPool(t, true)
+	stateStore := &memoryResourceStateStore{state: persisted, exists: true}
+	service, err := NewResourceCoordinator(stateStore, &fakeResourceNetwork{}, &fakeDrainTerminator{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := service.Snapshot().Pools[0].Draining[0]
+	if err := service.CompleteDrainedAddresses(context.Background(), "shared", batch.Addresses); err != nil {
+		t.Fatal(err)
+	}
+	saves := stateStore.saves
+
+	if err := service.CompleteDrainedAddresses(context.Background(), "shared", batch.Addresses); err != nil {
+		t.Fatalf("repeat batch completion = %v", err)
+	}
+	if stateStore.saves != saves {
+		t.Fatalf("saves = %d, want unchanged %d", stateStore.saves, saves)
+	}
+}
+
+func TestResourceCoordinatorRejectsInvalidBatchCompletionInput(t *testing.T) {
+	service, err := NewResourceCoordinator(&memoryResourceStateStore{}, &fakeResourceNetwork{}, &fakeDrainTerminator{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CompleteDrainedAddresses(context.Background(), "  ", []netip.Addr{netip.MustParseAddr("2001:db8:80::1")}); err == nil {
+		t.Fatal("blank pool accepted")
+	}
+	if err := service.CompleteDrainedAddresses(context.Background(), "shared", []netip.Addr{netip.MustParseAddr("::ffff:192.0.2.1")}); err == nil {
+		t.Fatal("IPv4-mapped address accepted")
+	}
+}
+
+func TestResourceCoordinatorCompleteAllDrainsClearsResidualBatchesInOneTransaction(t *testing.T) {
+	persisted := resourceStateWithPool(t, true)
+	twiceRefreshed, err := ipv6resource.NewStoreFromState(persisted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := twiceRefreshed.RefreshPool("shared"); err != nil {
+		t.Fatal(err)
+	}
+	persisted = twiceRefreshed.State()
+	stateStore := &memoryResourceStateStore{state: persisted, exists: true}
+	networkManager := &fakeResourceNetwork{}
+	runtime := &fakeResourceRuntime{}
+	service, err := NewResourceCoordinator(stateStore, networkManager, &fakeDrainTerminator{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetRuntimeSynchronizer(runtime); err != nil {
+		t.Fatal(err)
+	}
+	drained := make(map[netip.Addr]struct{})
+	for _, batch := range persisted.Pools[0].Draining {
+		for _, address := range batch.Addresses {
+			drained[address] = struct{}{}
+		}
+	}
+	if len(drained) != 4 {
+		t.Fatalf("residual draining addresses = %d, want 4", len(drained))
+	}
+
+	if err := service.CompleteAllDrains(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if stateStore.saves != 1 || len(networkManager.calls) != 1 || len(runtime.calls) != 1 {
+		t.Fatalf("startup drain transaction calls: saves=%d network=%d runtime=%d", stateStore.saves, len(networkManager.calls), len(runtime.calls))
+	}
+	snapshot := service.Snapshot()
+	if len(snapshot.Pools[0].Draining) != 0 {
+		t.Fatalf("remaining drain = %#v", snapshot.Pools[0].Draining)
+	}
+	for address := range drained {
+		for _, canonical := range snapshot.Addresses {
+			if canonical.Address == address {
+				t.Fatalf("residual drained address %s remained", address)
+			}
+		}
+	}
+}
+
+func TestResourceCoordinatorCompleteAllDrainsIsNoopWithoutDraining(t *testing.T) {
+	persisted := resourceStateWithPool(t, false)
+	stateStore := &memoryResourceStateStore{state: persisted, exists: true}
+	networkManager := &fakeResourceNetwork{}
+	service, err := NewResourceCoordinator(stateStore, networkManager, &fakeDrainTerminator{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.CompleteAllDrains(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if stateStore.saves != 0 || len(networkManager.calls) != 0 {
+		t.Fatalf("no-drain startup mutated state: saves=%d network=%d", stateStore.saves, len(networkManager.calls))
+	}
+}
+
 func TestResourceCoordinatorStateReturnsCommittedIsolatedSnapshot(t *testing.T) {
 	state := resourceStateWithPool(t, true)
 	states := &memoryResourceStateStore{state: state, exists: true}

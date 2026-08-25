@@ -433,6 +433,9 @@ func buildProduction(options ProductionOptions, platform productionPlatform) (_ 
 			if startupErr := protectedResources.StartupError(); startupErr != nil {
 				return fmt.Errorf("resource state is unavailable: %w", startupErr)
 			}
+			if err := resources.CompleteAllDrains(ctx); err != nil {
+				return fmt.Errorf("complete residual drains: %w", err)
+			}
 			return resources.Reconcile(ctx)
 		},
 		RestoreNodes: func(ctx context.Context) error {

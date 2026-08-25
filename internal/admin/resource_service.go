@@ -208,15 +208,22 @@ func (c *ResourceCoordinator) ForceDrain(ctx context.Context, pool, batch string
 	return c.commitCandidate(ctx, before, candidate)
 }
 
-func (c *ResourceCoordinator) CompleteDrainedAddress(ctx context.Context, pool string, address netip.Addr) error {
-	address = address.Unmap()
-	if strings.TrimSpace(pool) == "" || !address.IsValid() || !address.Is6() || address.Is4In6() {
-		return errors.New("valid draining pool and native IPv6 address are required")
-	}
+// CompleteAllDrains finishes every draining batch in a single transaction.
+// It is intended for the startup sequence, before nodes restore: no proxy
+// connection survives a restart, so residual batches can never drain
+// naturally and would otherwise linger until an administrator force-drains.
+func (c *ResourceCoordinator) CompleteAllDrains(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	before := c.store.State()
-	if !isDrainingAddress(before, pool, address) {
+	type residualBatch struct{ pool, batch string }
+	var residuals []residualBatch
+	for _, pool := range before.Pools {
+		for _, batch := range pool.Draining {
+			residuals = append(residuals, residualBatch{pool: pool.Name, batch: batch.ID})
+		}
+	}
+	if len(residuals) == 0 {
 		return nil
 	}
 	if err := c.ensureWritable(); err != nil {
@@ -226,8 +233,58 @@ func (c *ResourceCoordinator) CompleteDrainedAddress(ctx context.Context, pool s
 	if err != nil {
 		return fmt.Errorf("clone resource state: %w", err)
 	}
-	if _, err := candidate.CompleteDrainedAddress(pool, address); err != nil {
+	for _, residual := range residuals {
+		if err := candidate.CompleteDrain(residual.pool, residual.batch); err != nil {
+			return err
+		}
+	}
+	return c.commitCandidate(ctx, before, candidate)
+}
+
+func (c *ResourceCoordinator) CompleteDrainedAddress(ctx context.Context, pool string, address netip.Addr) error {
+	return c.CompleteDrainedAddresses(ctx, pool, []netip.Addr{address})
+}
+
+func (c *ResourceCoordinator) CompleteDrainedAddresses(ctx context.Context, pool string, addresses []netip.Addr) error {
+	if strings.TrimSpace(pool) == "" {
+		return errors.New("valid draining pool is required")
+	}
+	normalized := make([]netip.Addr, 0, len(addresses))
+	seen := make(map[netip.Addr]struct{}, len(addresses))
+	for _, raw := range addresses {
+		address := raw.Unmap()
+		if !address.IsValid() || !address.Is6() || address.Is4In6() {
+			return errors.New("valid native IPv6 addresses are required")
+		}
+		if _, duplicate := seen[address]; duplicate {
+			continue
+		}
+		seen[address] = struct{}{}
+		normalized = append(normalized, address)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	before := c.store.State()
+	pending := make([]netip.Addr, 0, len(normalized))
+	for _, address := range normalized {
+		if isDrainingAddress(before, pool, address) {
+			pending = append(pending, address)
+		}
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	if err := c.ensureWritable(); err != nil {
 		return err
+	}
+	candidate, err := ipv6resource.NewStoreFromState(before)
+	if err != nil {
+		return fmt.Errorf("clone resource state: %w", err)
+	}
+	for _, address := range pending {
+		if _, err := candidate.CompleteDrainedAddress(pool, address); err != nil {
+			return err
+		}
 	}
 	return c.commitCandidate(ctx, before, candidate)
 }
