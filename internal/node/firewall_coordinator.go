@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"sort"
 	"strings"
 	"sync"
@@ -16,17 +17,39 @@ type FirewallRulesetReplacer interface {
 	Replace(context.Context, []firewall.Opening) error
 }
 
-type FirewallCoordinator struct {
-	mu         sync.Mutex
-	replacer   FirewallRulesetReplacer
-	management []proxy.BindEndpoint
-	nodes      map[string][]proxy.BindEndpoint
-	relays     map[proxy.BindEndpoint]int
+// relayScope identifies the address a UDP relay association binds to. UDP
+// relay ports are always allocated from the fixed port range passed to
+// NewFirewallCoordinator, so all associations on the same (family, address)
+// pair can share one port-range opening instead of rewriting the whole
+// nftables ruleset per association. While at least one association is active
+// the entire relay port range stays open on that address; the range is
+// reserved for this program's own allocator and incoming packets still need a
+// bound socket to be delivered.
+type relayScope struct {
+	family  proxy.BindFamily
+	address netip.Addr
 }
 
-func NewFirewallCoordinator(ctx context.Context, replacer FirewallRulesetReplacer, management []proxy.BindEndpoint) (*FirewallCoordinator, error) {
+func relayScopeOf(endpoint proxy.BindEndpoint) relayScope {
+	return relayScope{family: endpoint.Family, address: endpoint.Address}
+}
+
+type FirewallCoordinator struct {
+	mu           sync.Mutex
+	replacer     FirewallRulesetReplacer
+	management   []proxy.BindEndpoint
+	nodes        map[string][]proxy.BindEndpoint
+	relayScopes  map[relayScope]int
+	relayPortMin uint16
+	relayPortMax uint16
+}
+
+func NewFirewallCoordinator(ctx context.Context, replacer FirewallRulesetReplacer, management []proxy.BindEndpoint, relayPortMin, relayPortMax uint16) (*FirewallCoordinator, error) {
 	if replacer == nil {
 		return nil, errors.New("firewall ruleset replacer is required")
+	}
+	if relayPortMin == 0 || relayPortMax == 0 || relayPortMin > relayPortMax {
+		return nil, fmt.Errorf("invalid UDP relay port range %d-%d", relayPortMin, relayPortMax)
 	}
 	normalized, err := normalizeFirewallEndpoints(management, proxy.BindTCP, true)
 	if err != nil {
@@ -34,9 +57,11 @@ func NewFirewallCoordinator(ctx context.Context, replacer FirewallRulesetReplace
 	}
 	coordinator := &FirewallCoordinator{
 		replacer: replacer, management: normalized,
-		nodes: make(map[string][]proxy.BindEndpoint), relays: make(map[proxy.BindEndpoint]int),
+		nodes:       make(map[string][]proxy.BindEndpoint),
+		relayScopes: make(map[relayScope]int),
+		relayPortMin: relayPortMin, relayPortMax: relayPortMax,
 	}
-	if err := replacer.Replace(ctx, coordinator.openings(normalized, coordinator.nodes, coordinator.relays)); err != nil {
+	if err := replacer.Replace(ctx, coordinator.openings(normalized, coordinator.nodes, coordinator.relayScopes)); err != nil {
 		return nil, fmt.Errorf("apply initial firewall rules: %w", err)
 	}
 	return coordinator, nil
@@ -54,7 +79,7 @@ func (c *FirewallCoordinator) OpenNode(ctx context.Context, id string, endpoints
 	defer c.mu.Unlock()
 	next := cloneNodeEndpoints(c.nodes)
 	next[id] = normalized
-	if err := c.replacer.Replace(ctx, c.openings(c.management, next, c.relays)); err != nil {
+	if err := c.replacer.Replace(ctx, c.openings(c.management, next, c.relayScopes)); err != nil {
 		return fmt.Errorf("apply node firewall opening: %w", err)
 	}
 	c.nodes = next
@@ -74,7 +99,7 @@ func (c *FirewallCoordinator) CloseNode(ctx context.Context, id string, endpoint
 	}
 	next := cloneNodeEndpoints(c.nodes)
 	delete(next, id)
-	if err := c.replacer.Replace(ctx, c.openings(c.management, next, c.relays)); err != nil {
+	if err := c.replacer.Replace(ctx, c.openings(c.management, next, c.relayScopes)); err != nil {
 		return fmt.Errorf("close node firewall opening: %w", err)
 	}
 	c.nodes = next
@@ -86,19 +111,19 @@ func (c *FirewallCoordinator) Open(ctx context.Context, endpoint proxy.BindEndpo
 	if err != nil {
 		return fmt.Errorf("validate UDP relay firewall endpoint: %w", err)
 	}
-	endpoint = normalized[0]
+	scope := relayScopeOf(normalized[0])
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.relays[endpoint] > 0 {
-		c.relays[endpoint]++
+	if c.relayScopes[scope] > 0 {
+		c.relayScopes[scope]++
 		return nil
 	}
-	next := cloneRelayReferences(c.relays)
-	next[endpoint] = 1
+	next := cloneRelayScopes(c.relayScopes)
+	next[scope] = 1
 	if err := c.replacer.Replace(ctx, c.openings(c.management, c.nodes, next)); err != nil {
 		return fmt.Errorf("apply UDP relay firewall opening: %w", err)
 	}
-	c.relays = next
+	c.relayScopes = next
 	return nil
 }
 
@@ -107,33 +132,33 @@ func (c *FirewallCoordinator) Close(ctx context.Context, endpoint proxy.BindEndp
 	if err != nil {
 		return fmt.Errorf("validate UDP relay firewall endpoint: %w", err)
 	}
-	endpoint = normalized[0]
+	scope := relayScopeOf(normalized[0])
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	count := c.relays[endpoint]
+	count := c.relayScopes[scope]
 	if count == 0 {
 		return nil
 	}
 	if count > 1 {
-		c.relays[endpoint]--
+		c.relayScopes[scope]--
 		return nil
 	}
-	next := cloneRelayReferences(c.relays)
-	delete(next, endpoint)
+	next := cloneRelayScopes(c.relayScopes)
+	delete(next, scope)
 	if err := c.replacer.Replace(ctx, c.openings(c.management, c.nodes, next)); err != nil {
 		return fmt.Errorf("close UDP relay firewall opening: %w", err)
 	}
-	c.relays = next
+	c.relayScopes = next
 	return nil
 }
 
 func (c *FirewallCoordinator) State() []firewall.Opening {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.openings(c.management, c.nodes, c.relays)
+	return c.openings(c.management, c.nodes, c.relayScopes)
 }
 
-func (c *FirewallCoordinator) openings(management []proxy.BindEndpoint, nodes map[string][]proxy.BindEndpoint, relays map[proxy.BindEndpoint]int) []firewall.Opening {
+func (c *FirewallCoordinator) openings(management []proxy.BindEndpoint, nodes map[string][]proxy.BindEndpoint, relays map[relayScope]int) []firewall.Opening {
 	result := make([]firewall.Opening, 0, len(management)+len(relays))
 	for _, endpoint := range management {
 		result = append(result, firewallOpening(endpoint, "management"))
@@ -148,8 +173,19 @@ func (c *FirewallCoordinator) openings(management []proxy.BindEndpoint, nodes ma
 			result = append(result, firewallOpening(endpoint, "node:"+id))
 		}
 	}
-	for endpoint := range relays {
-		result = append(result, firewallOpening(endpoint, "udp-relay"))
+	for scope := range relays {
+		family := firewall.FamilyIPv4
+		if scope.family == proxy.BindIPv6 {
+			family = firewall.FamilyIPv6
+		}
+		result = append(result, firewall.Opening{
+			Protocol: firewall.ProtocolUDP,
+			Family:   family,
+			Address:  scope.address,
+			Port:     c.relayPortMin,
+			PortEnd:  c.relayPortMax,
+			Purpose:  "udp-relay",
+		})
 	}
 	sort.Slice(result, func(i, j int) bool {
 		left, right := result[i], result[j]
@@ -164,6 +200,9 @@ func (c *FirewallCoordinator) openings(management []proxy.BindEndpoint, nodes ma
 		}
 		if left.Port != right.Port {
 			return left.Port < right.Port
+		}
+		if left.PortEnd != right.PortEnd {
+			return left.PortEnd < right.PortEnd
 		}
 		return left.Purpose < right.Purpose
 	})
@@ -268,10 +307,10 @@ func cloneNodeEndpoints(source map[string][]proxy.BindEndpoint) map[string][]pro
 	return result
 }
 
-func cloneRelayReferences(source map[proxy.BindEndpoint]int) map[proxy.BindEndpoint]int {
-	result := make(map[proxy.BindEndpoint]int, len(source))
-	for endpoint, count := range source {
-		result[endpoint] = count
+func cloneRelayScopes(source map[relayScope]int) map[relayScope]int {
+	result := make(map[relayScope]int, len(source))
+	for scope, count := range source {
+		result[scope] = count
 	}
 	return result
 }

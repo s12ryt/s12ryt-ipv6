@@ -90,6 +90,55 @@ func TestNftBackendRejectsNonOwnedRulesetBeforeConnecting(t *testing.T) {
 	}
 }
 
+func TestNftBackendEmitsPortRangeAndSinglePortComparisons(t *testing.T) {
+	conn := &fakeNftConn{}
+	backend := newNftBackend(func() (nftConnection, error) { return conn, nil })
+	rules := Ruleset{Family: TableFamilyINet, Table: OwnedTableName, Openings: []Opening{
+		{Protocol: ProtocolUDP, Family: FamilyIPv6, Address: netip.MustParseAddr("2001:4860:1::1"), Port: 51000},
+		{Protocol: ProtocolUDP, Family: FamilyIPv6, Address: netip.MustParseAddr("2001:4860:1::2"), Port: 49152, PortEnd: 65535},
+	}}
+	if err := backend.Apply(context.Background(), rules); err != nil {
+		t.Fatal(err)
+	}
+	if len(conn.rules) != 2 {
+		t.Fatalf("rules = %d, want 2", len(conn.rules))
+	}
+	single := transportComparisons(conn.rules[0])
+	if len(single) != 1 ||
+		single[0].Op != expr.CmpOpEq ||
+		string(single[0].Data) != string([]byte{0xC7, 0x38}) {
+		t.Fatalf("single-port comparison = %#v, want one Eq on 51000", single)
+	}
+	ranged := transportComparisons(conn.rules[1])
+	if len(ranged) != 2 ||
+		ranged[0].Op != expr.CmpOpGte ||
+		ranged[1].Op != expr.CmpOpLte {
+		t.Fatalf("range comparisons = %#v, want Gte then Lte", ranged)
+	}
+	if string(ranged[0].Data) != string([]byte{0xC0, 0x00}) ||
+		string(ranged[1].Data) != string([]byte{0xFF, 0xFF}) {
+		t.Fatalf("range comparison data = %x / %x, want c000..ffff", ranged[0].Data, ranged[1].Data)
+	}
+}
+
+func transportComparisons(rule *nftables.Rule) []*expr.Cmp {
+	var result []*expr.Cmp
+	seenTransportHeader := false
+	for _, expression := range rule.Exprs {
+		if payload, ok := expression.(*expr.Payload); ok && payload.Base == expr.PayloadBaseTransportHeader {
+			seenTransportHeader = true
+			continue
+		}
+		if !seenTransportHeader {
+			continue
+		}
+		if cmp, ok := expression.(*expr.Cmp); ok {
+			result = append(result, cmp)
+		}
+	}
+	return result
+}
+
 func TestNftBackendDeleteIgnoresForeignTables(t *testing.T) {
 	owned := &nftables.Table{Family: nftables.TableFamilyINet, Name: OwnedTableName}
 	foreign := &nftables.Table{Family: nftables.TableFamilyINet, Name: "foreign"}

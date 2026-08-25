@@ -118,6 +118,73 @@ func TestManagerValidatesAndDeduplicatesOpenings(t *testing.T) {
 	}
 }
 
+func TestManagerAcceptsAndDeduplicatesPortRangeOpenings(t *testing.T) {
+	backend := &fakeBackend{}
+	manager, err := NewManager(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opening := Opening{
+		Protocol: ProtocolUDP,
+		Family:   FamilyIPv6,
+		Address:  netip.MustParseAddr("2001:4860:1::10"),
+		Port:     49152,
+		PortEnd:  65535,
+		Purpose:  "udp-relay",
+	}
+	if err := manager.Replace(context.Background(), []Opening{opening, opening}); err != nil {
+		t.Fatal(err)
+	}
+	state := manager.State()
+	if len(state.Openings) != 1 || state.Openings[0].PortEnd != 65535 {
+		t.Fatalf("range opening state = %#v", state)
+	}
+}
+
+func TestManagerRejectsInvertedPortRanges(t *testing.T) {
+	manager, err := NewManager(&fakeBackend{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := Opening{
+		Protocol: ProtocolUDP,
+		Family:   FamilyIPv6,
+		Address:  netip.MustParseAddr("2001:4860:1::10"),
+		Port:     51000,
+		PortEnd:  50000,
+	}
+	if err := manager.Replace(context.Background(), []Opening{invalid}); err == nil {
+		t.Fatal("Replace() error = nil, want inverted port range failure")
+	}
+}
+
+func TestManagerSortsPortRangeOpeningsDeterministically(t *testing.T) {
+	manager, err := NewManager(&fakeBackend{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := Opening{
+		Protocol: ProtocolUDP,
+		Family:   FamilyIPv6,
+		Address:  netip.MustParseAddr("2001:4860:1::10"),
+		Port:     49152,
+		Purpose:  "udp-relay",
+	}
+	narrow := base
+	narrow.PortEnd = 60000
+	wide := base
+	wide.PortEnd = 65535
+	if err := manager.Replace(context.Background(), []Opening{wide, narrow}); err != nil {
+		t.Fatal(err)
+	}
+	state := manager.State()
+	if len(state.Openings) != 2 ||
+		state.Openings[0].PortEnd != 60000 ||
+		state.Openings[1].PortEnd != 65535 {
+		t.Fatalf("sorted range openings = %#v", state.Openings)
+	}
+}
+
 func TestManagerShutdownDeletesOnlyOwnedTableAndClearsStateAfterSuccess(t *testing.T) {
 	backend := &fakeBackend{}
 	manager, err := NewManager(backend)

@@ -35,7 +35,11 @@ type Opening struct {
 	Family   AddressFamily
 	Address  netip.Addr
 	Port     uint16
-	Purpose  string
+	// PortEnd > 0 opens the inclusive port range [Port, PortEnd] instead of a
+	// single port. UDP relay scopes use this to cover the allocator range with
+	// one rule instead of one rule per association.
+	PortEnd uint16
+	Purpose string
 }
 
 type Ruleset struct {
@@ -118,6 +122,7 @@ func normalizeOpenings(openings []Opening) ([]Opening, error) {
 		family   AddressFamily
 		address  netip.Addr
 		port     uint16
+		portEnd  uint16
 	}
 	seen := make(map[endpoint]struct{}, len(openings))
 	normalized := make([]Opening, 0, len(openings))
@@ -131,6 +136,9 @@ func normalizeOpenings(openings []Opening) ([]Opening, error) {
 		if opening.Port == 0 {
 			return nil, errors.New("firewall port must be non-zero")
 		}
+		if opening.PortEnd != 0 && opening.PortEnd < opening.Port {
+			return nil, fmt.Errorf("firewall port range end %d is below start %d", opening.PortEnd, opening.Port)
+		}
 		if opening.Address.IsValid() {
 			opening.Address = opening.Address.Unmap()
 			if opening.Family == FamilyIPv4 && !opening.Address.Is4() {
@@ -140,7 +148,7 @@ func normalizeOpenings(openings []Opening) ([]Opening, error) {
 				return nil, fmt.Errorf("address %s does not match IPv6 opening", opening.Address)
 			}
 		}
-		key := endpoint{opening.Protocol, opening.Family, opening.Address, opening.Port}
+		key := endpoint{opening.Protocol, opening.Family, opening.Address, opening.Port, opening.PortEnd}
 		if _, exists := seen[key]; exists {
 			continue
 		}
@@ -158,7 +166,10 @@ func normalizeOpenings(openings []Opening) ([]Opening, error) {
 		if left.Address != right.Address {
 			return left.Address.Compare(right.Address) < 0
 		}
-		return left.Port < right.Port
+		if left.Port != right.Port {
+			return left.Port < right.Port
+		}
+		return left.PortEnd < right.PortEnd
 	})
 	return normalized, nil
 }

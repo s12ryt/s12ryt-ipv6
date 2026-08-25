@@ -204,8 +204,19 @@ func openingExpressions(opening Opening) []expr.Any {
 	if opening.Protocol == ProtocolUDP {
 		transportProtocol = byte(unix.IPPROTO_UDP)
 	}
-	port := make([]byte, 2)
-	binary.BigEndian.PutUint16(port, opening.Port)
+	portStart := make([]byte, 2)
+	binary.BigEndian.PutUint16(portStart, opening.Port)
+	portMatch := []expr.Any{
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: portStart},
+	}
+	if opening.PortEnd != 0 {
+		portEnd := make([]byte, 2)
+		binary.BigEndian.PutUint16(portEnd, opening.PortEnd)
+		portMatch = []expr.Any{
+			&expr.Cmp{Op: expr.CmpOpGte, Register: 1, Data: portStart},
+			&expr.Cmp{Op: expr.CmpOpLte, Register: 1, Data: portEnd},
+		}
+	}
 
 	expressions := []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
@@ -221,8 +232,8 @@ func openingExpressions(opening Opening) []expr.Any {
 	}
 	expressions = append(expressions,
 		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: port},
-		&expr.Verdict{Kind: expr.VerdictAccept},
 	)
+	expressions = append(expressions, portMatch...)
+	expressions = append(expressions, &expr.Verdict{Kind: expr.VerdictAccept})
 	return expressions
 }

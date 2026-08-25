@@ -423,7 +423,7 @@ func buildProduction(options ProductionOptions, platform productionPlatform) (_ 
 		},
 		InitializePassword: passwords.Initialize,
 		InitializeRuntime: func(ctx context.Context) error {
-			coordinator, createErr := node.NewFirewallCoordinator(ctx, firewallManager, productionManagementEndpoints(settings.Management.Port))
+			coordinator, createErr := node.NewFirewallCoordinator(ctx, firewallManager, productionManagementEndpoints(settings.Management.Port), settings.Ports.Min, settings.Ports.Max)
 			if createErr != nil {
 				return createErr
 			}
