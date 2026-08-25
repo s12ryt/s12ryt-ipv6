@@ -377,3 +377,21 @@
 - RED：`drain_queue_test.go` 改批次介面後編譯失敗（介面/方法不存在）；`resource_service_test.go` 對 `CompleteDrainedAddresses`/`CompleteAllDrains` 編譯失敗。
 - GREEN：app/admin 全綠；新契約涵蓋按池分組保序、單一事務（saves=1）、混合已完成/重複地址冪等、無 draining no-op、雙批次單事務清除、無效輸入拒絕。
 - 完整 `go test ./...`、`go vet`、Linux amd64/arm64 交叉建置通過；治理紀錄同步更新並推送。
+
+## 28. 第六輪自主授權：同類缺陷模式全面排查（F1/F2）
+
+使用者要求翻找是否有其他類似 R1（重啟殘留）/R2（逐項事務）/B1（逐項 fsync）/B2-B3（O(n^2) 全量 dump）的同型缺陷。掃描結論：stats/node persistent/eventlog/agent apply/operations/monitor 週期/vault/config 均安全；發現並修復兩項資料路徑問題。
+
+### 28.1 F1：UDP relay 埠範圍聚合（每 association 兩次全表 nftables 替換）
+
+- 問題：每個 SOCKS5 UDP ASSOCIATE 觸發 firewall.Open/Close 各一次完整規則集替換（ListTables+DelTable+AddTable+N×AddRule+Flush），全程持 coordinator.mu＋Manager.mu；高 UDP 負載下每秒數十次全表重建並序列化所有節點啟停。
+- 修復：`firewall.Opening` 加 `PortEnd uint16`（0=單埠，normalizeOpenings 驗證/去重/排序支援）；backend 對範圍生成 Gte/Lte 兩個 Cmp；`FirewallCoordinator` 以 `relayScope{family,address}` 計數——同位址僅首次/末次觸發 Replace，openings() 每活躍 scope 一條 UDP 範圍規則（Port=relayPortMin、PortEnd=relayPortMax）；production 以 settings.Ports.Min/Max 接線。
+- 安全性取捨（已註解）：association 存續期間該位址整個 UDP allocator 範圍開放；範圍為程式專用、其他程式綁代理專用 IPv6 機率趨零、且仍需 socket 綁定才收包。
+- 驗收：manager 3 新測試（dedup/inverted/deterministic sort）；coordinator 改寫（scope 計數 ReferenceCountsRelayScopesAcrossPorts、TracksRelayScopesPerAddress、建構子驗證擴充）；backend Gte/Lte 表達式測試於 WSL 實跑 PASS。
+
+### 28.2 F2：PolicyProvider 每出站連線 clone 兩個地址集
+
+- 問題：`Policy()` 每次呼叫（每出站連線一次）cloneAddressSet×2；address 模式大池時每連線最多 2×池規模 entries 複製。
+- 修復（契約變更）：Sync/RefreshHostAddresses 本為 build-new-then-swap，`Policy()` 改回傳唯讀共享視圖（零複製）；`DestinationPolicy` 文檔明示「呼叫方不得修改」；全 codebase grep 證明零寫入消費者。
+- 驗收：TestPolicyProviderPolicyReturnsZeroCopyViews（reflect Pointer identity，RED 於 clone 版失敗）；TestPolicyProviderPublishedViewsSurviveLaterUpdates（swap 語義守護）；TestPolicyProviderConcurrentPolicySyncAndRefresh（併發功能測試）；既有 mutation 防護斷言改為唯讀視圖契約斷言。
+- 限制：-race 因本機無 cgo/gcc 無法執行；並發安全以結構性論證（不可變快照發佈＋RLock 讀取＋零寫入消費者）＋併發功能測試為證據。

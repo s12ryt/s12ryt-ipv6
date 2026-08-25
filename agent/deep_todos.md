@@ -144,3 +144,12 @@
 - 其餘確認安全：CompleteDrainedAddress 冪等、ForceDrain 與積壓消費交錯無害、registry.draining 與 state 同步提交、Prepare/mark 鎖外回呼無競態、Enqueue wake 緩衝 1 無丟失、三層回滾正確。觀察（低）store.go automaticCount==0 覆蓋 err 的怪異寫法無實害，不修。
 - TDD：RED＝drain_queue_test.go 批次介面編譯失敗＋resource_service_test.go 新方法不存在編譯失敗；GREEN＝app/admin 全綠。新測試：按池分組保序、單一事務 saves=1、混合已完成/重複地址冪等、無 draining no-op、CompleteAllDrains 雙批次單事務、無效輸入拒絕。
 - 驗證：`go build ./...`、`go vet ./...`、`go test ./...`（15 packages）全綠；Linux amd64/arm64 交叉建置通過。提交：fix(resources) 批次完成＋啟動清殘＋docs。
+
+## 2026-08-25 第六輪：同類缺陷模式全面排查（F1/F2 修復）
+
+- 觸發：使用者要求翻找其他類似 R1/R2/B1/B2-B3 同型缺陷（逐項事務/重啟殘留/O(n^2) dump/無界累積/資料路徑全量替換）。
+- 掃描安全結論：stats 持久化（ticker 間隔保存非每連線）、node persistent（每操作單次 Save＋回滾）、eventlog Write（append 無 fsync、proxy 不入 stdout）、agent apply 逐項事務（§24 契約設計）、operations 迴圈（DTO 轉換）、connectivity/host_addresses/node_secrets（on-demand）、dns64 monitor（60s ticker＋Stop）、agent_commands createNodeBatch（CreateBatch 單事務冪等）、vault（啟動一次 O_EXCL）、config 純函數。
+- F1（中高，資料路徑）：每 UDP ASSOCIATE 兩次完整 nftables 全表替換。修復：Opening.PortEnd＋backend Gte/Lte＋FirewallCoordinator relayScope{family,address} 計數（首次/末次才 Replace）＋openings() 每 scope 一條 UDP 埠範圍規則＋production 以 settings.Ports.Min/Max 接線。TDD：manager 3 測試＋coordinator_test 全改寫（ReferenceCountsRelayScopesAcrossPorts/TracksRelayScopesPerAddress/ValidatesConstruction 擴充）＋backend 範圍表達式測試；RED=編譯失敗（PortEnd/新簽名），GREEN=Windows 三套件綠＋WSL linux binary PASS。
+- F2（中，資料路徑）：Policy() 每出站連線 clone 兩個地址集。修復（契約變更 snapshot→唯讀視圖）：Policy() 免 clone 回傳共享引用；DestinationPolicy/Policy() 文檔明示唯讀；grep 全 codebase 零寫入消費者。TDD：ZeroCopy identity 測試 RED（clone 版 fail）→GREEN；swap 語義守護＋併發功能測試；既有 mutation 防護斷言改寫為新契約。
+- 殘餘：-race 無 cgo/gcc 環境不可執行（結構性論證＋功能渉試替代）；真實 netlink 行為列 integration 風險。
+- 迴歸：go vet＋15 packages 全綠＋Linux amd64/arm64 交叉建置。

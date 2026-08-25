@@ -174,3 +174,10 @@
 - 修改：internal/app/drain_queue.go（介面改 CompleteDrainedAddresses 批次簽名、Run 按 pool 分組保序、groupDrainedAddressesByPool）；internal/app/drain_queue_test.go（recordingDrainCompleter 改批次、新增 TestDrainQueueGroupsCompletionsByPool、既有兩測試適配、waitForDrainAddresses）；internal/admin/resource_service.go（新增 CompleteAllDrains 與 CompleteDrainedAddresses、CompleteDrainedAddress 改委託）；internal/admin/resource_service_test.go（新增 5 測試：批次單事務、skip finished+去重、nothing draining no-op、無效輸入、CompleteAllDrains 清殘×2）；internal/app/production_build.go（ReconcileResources 先 CompleteAllDrains 再 Reconcile）；agent/question.md（§27）、agent/deep_todos.md、agent/memory.md。
 - 驗證指令：go test ./internal/app ./internal/admin（RED 編譯失敗→GREEN）；go build ./... && go vet ./... && go test ./... -count=1（15 pkgs 全綠）；CGO_ENABLED=0 GOOS=linux GOARCH=amd64/arm64 go build（雙架構 OK）。
 - 提交：單一 fix 提交（R1+R2 同檔耦合）＋docs 提交，推送 origin/main。
+
+## 2026-08-25 第六輪操作記錄（F1/F2 修復）
+
+- 讀取：internal/firewall/manager.go、manager_test.go、backend_linux.go、backend_linux_test.go、internal/node/firewall_coordinator.go、firewall_coordinator_test.go、internal/app/production_build.go（L410-439）、internal/config/config.go（PortRange 預設）、internal/app/policy_provider.go、policy_provider_test.go、internal/policy/destination.go、agent/question.md。
+- 修改：manager.go（Opening.PortEnd＋normalize 驗證/dedup/排序）；backend_linux.go（範圍 Gte/Lte）；firewall_coordinator.go（relayScope 計數＋relayPortMin/Max＋建構子 5 參數）；production_build.go（接線 settings.Ports.Min/Max）；policy_provider.go（Policy() 免 clone＋文檔、刪 cloneAddressSet）；destination.go（DestinationPolicy 唯讀文檔）；manager_test.go（+3 測試）；firewall_coordinator_test.go（全檔改寫）；backend_linux_test.go（範圍表達式測試）；policy_provider_test.go（imports reflect/sync/time＋mutation 斷言改寫＋3 新測試＋managedAddressState helper）；agent/question.md（§28）、deep_todos.md、memory.md。
+- 驗證記錄：F1 RED=go test 編譯失敗（PortEnd/參數數）＋GOOS=linux test -c 同因；GREEN=firewall/node/app 三套件綠＋WSL firewall binary PASS。F2 RED=TestPolicyProviderPolicyReturnsZeroCopyViews "copied the local address set"；GREEN=6/6 測試綠。go vet OK；go test ./... 15 packages 全綠；CGO_ENABLED=0 GOOS=linux GOARCH=amd64/arm64 build OK。-race 不可執行（無 gcc，記錄於 §28.2）。
+- 提交：F1 perf(firewall)＋F2 perf(app) 與 docs，推送 origin/main。
