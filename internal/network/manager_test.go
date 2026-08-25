@@ -456,6 +456,107 @@ func TestReleaseAndShutdownNeverRemoveUnownedResources(t *testing.T) {
 	}
 }
 
+func TestReconcileBatchesOwnershipSavesWhenRemovingStaleAddresses(t *testing.T) {
+	template := mustTemplate(t, ipv6resource.ModeAddress)
+	refs := []AddressRef{
+		addressRef(template, "2001:4860:1::1"),
+		addressRef(template, "2001:4860:1::2"),
+		addressRef(template, "2001:4860:1::3"),
+		addressRef(template, "2001:4860:1::4"),
+		addressRef(template, "2001:4860:1::5"),
+	}
+	kernel := &fakeKernel{
+		addresses: make(map[AddressRef]bool), routes: make(map[RouteRef]bool),
+		dadErrors: make(map[AddressRef]error), bindErrors: make(map[AddressRef]error),
+	}
+	owned := make([]AddressRef, 0, len(refs))
+	for _, ref := range refs {
+		kernel.addresses[ref] = true
+		owned = append(owned, ref)
+	}
+	store := &memoryOwnershipStore{state: Ownership{Addresses: owned}}
+	manager, err := NewResourceManager(kernel, store, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.Reconcile(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(kernel.removeAddresses) != len(refs) {
+		t.Fatalf("removed addresses = %v, want all stale addresses", kernel.removeAddresses)
+	}
+	if len(store.state.Addresses) != 0 {
+		t.Fatalf("ownership after reconcile = %#v, want empty", store.state)
+	}
+	if store.saves > 2 {
+		t.Fatalf("ownership saves = %d, want batched persistence (<= 2) instead of one save per address", store.saves)
+	}
+}
+
+func TestReleaseBatchesOwnershipSaves(t *testing.T) {
+	template := mustTemplate(t, ipv6resource.ModeAddress)
+	refs := []AddressRef{
+		addressRef(template, "2001:4860:1::1"),
+		addressRef(template, "2001:4860:1::2"),
+		addressRef(template, "2001:4860:1::3"),
+	}
+	kernel := &fakeKernel{
+		addresses: make(map[AddressRef]bool), routes: make(map[RouteRef]bool),
+		dadErrors: make(map[AddressRef]error), bindErrors: make(map[AddressRef]error),
+	}
+	owned := make([]AddressRef, 0, len(refs))
+	addresses := make([]netip.Addr, 0, len(refs))
+	for _, ref := range refs {
+		kernel.addresses[ref] = true
+		owned = append(owned, ref)
+		addresses = append(addresses, ref.Address)
+	}
+	store := &memoryOwnershipStore{state: Ownership{Addresses: owned}}
+	manager, err := NewResourceManager(kernel, store, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.Release(context.Background(), template, addresses); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.state.Addresses) != 0 {
+		t.Fatalf("ownership after release = %#v, want empty", store.state)
+	}
+	if store.saves > 1 {
+		t.Fatalf("ownership saves = %d, want a single batched save", store.saves)
+	}
+}
+
+func TestReconcilePersistsSuccessfulRemovalsWhenARemovalFails(t *testing.T) {
+	template := mustTemplate(t, ipv6resource.ModeAddress)
+	first := addressRef(template, "2001:4860:1::1")
+	failing := addressRef(template, "2001:4860:1::2")
+	last := addressRef(template, "2001:4860:1::3")
+	kernel := &fakeKernel{
+		addresses: map[AddressRef]bool{first: true, failing: true, last: true},
+		routes:    make(map[RouteRef]bool),
+		dadErrors: make(map[AddressRef]error), bindErrors: make(map[AddressRef]error),
+		removeAddrError: map[AddressRef]error{failing: errors.New("netlink busy")},
+	}
+	store := &memoryOwnershipStore{state: Ownership{Addresses: []AddressRef{first, failing, last}}}
+	manager, err := NewResourceManager(kernel, store, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.Reconcile(context.Background(), nil); err == nil {
+		t.Fatal("Reconcile() error = nil, want removal failure")
+	}
+	if len(store.state.Addresses) != 1 || store.state.Addresses[0] != failing {
+		t.Fatalf("ownership after partial failure = %#v, want only the failed address retained", store.state)
+	}
+	if store.saves < 1 {
+		t.Fatal("ownership saves = 0, want successful removals persisted")
+	}
+}
+
 func mustTemplate(t *testing.T, mode ipv6resource.ConfigMode) ipv6resource.PrefixTemplate {
 	t.Helper()
 	template, err := ipv6resource.NewPrefixTemplate("wan", "2001:4860:1::/64", "eth0", mode)

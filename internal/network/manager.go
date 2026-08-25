@@ -162,6 +162,7 @@ func (m *ResourceManager) removeStale(ctx context.Context, desiredAddresses map[
 		return fmt.Errorf("load network ownership: %w", err)
 	}
 	var failures []error
+	stateChanged := false
 	for _, ref := range slices.Clone(state.Addresses) {
 		if _, keep := desiredAddresses[ref]; keep {
 			continue
@@ -178,9 +179,7 @@ func (m *ResourceManager) removeStale(ctx context.Context, desiredAddresses map[
 			}
 		}
 		state.Addresses = removeAddressRef(state.Addresses, ref)
-		if saveErr := m.store.Save(state); saveErr != nil {
-			failures = append(failures, fmt.Errorf("save network ownership after removing address %s: %w", ref.Address, saveErr))
-		}
+		stateChanged = true
 	}
 	for _, ref := range slices.Clone(state.Routes) {
 		if _, keep := desiredRoutes[ref]; keep {
@@ -198,8 +197,11 @@ func (m *ResourceManager) removeStale(ctx context.Context, desiredAddresses map[
 			}
 		}
 		state.Routes = removeRouteRef(state.Routes, ref)
+		stateChanged = true
+	}
+	if stateChanged {
 		if saveErr := m.store.Save(state); saveErr != nil {
-			failures = append(failures, fmt.Errorf("save network ownership after removing route %s: %w", ref.Prefix, saveErr))
+			failures = append(failures, fmt.Errorf("save network ownership after stale removals: %w", saveErr))
 		}
 	}
 	return errors.Join(failures...)
@@ -218,6 +220,7 @@ func (m *ResourceManager) releaseAddresses(ctx context.Context, refs []AddressRe
 	}
 
 	var failures []error
+	stateChanged := false
 	for _, ref := range refs {
 		exists, checkErr := m.kernel.AddressExists(ctx, ref)
 		if checkErr != nil {
@@ -231,8 +234,11 @@ func (m *ResourceManager) releaseAddresses(ctx context.Context, refs []AddressRe
 			}
 		}
 		state.Addresses = removeAddressRef(state.Addresses, ref)
+		stateChanged = true
+	}
+	if stateChanged {
 		if saveErr := m.store.Save(state); saveErr != nil {
-			failures = append(failures, fmt.Errorf("save network ownership after releasing address %s: %w", ref.Address, saveErr))
+			failures = append(failures, fmt.Errorf("save network ownership after releasing addresses: %w", saveErr))
 		}
 	}
 	return errors.Join(failures...)
@@ -250,6 +256,7 @@ func (m *ResourceManager) releaseRoutes(ctx context.Context, refs []RouteRef) er
 	}
 
 	var failures []error
+	stateChanged := false
 	for _, ref := range refs {
 		exists, checkErr := m.kernel.LocalRouteExists(ctx, ref)
 		if checkErr != nil {
@@ -263,8 +270,11 @@ func (m *ResourceManager) releaseRoutes(ctx context.Context, refs []RouteRef) er
 			}
 		}
 		state.Routes = removeRouteRef(state.Routes, ref)
+		stateChanged = true
+	}
+	if stateChanged {
 		if saveErr := m.store.Save(state); saveErr != nil {
-			failures = append(failures, fmt.Errorf("save network ownership after releasing route %s: %w", ref.Prefix, saveErr))
+			failures = append(failures, fmt.Errorf("save network ownership after releasing routes: %w", saveErr))
 		}
 	}
 	return errors.Join(failures...)
