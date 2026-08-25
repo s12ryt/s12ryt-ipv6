@@ -156,3 +156,14 @@
 - 新觀察 A（中低，列建議未修）：eventlog `Tail` 與 `Write` 共用 mutex，Tail 持鎖解碼最多 5×100MB 期間，所有代理連線關閉的 proxy 事件寫入（TrafficObserver 在連線 goroutine 內同步呼叫 Write）排隊——管理頁查日誌時「關閉中連線」延遲 spike；不影響新連線接受、無洩漏無崩潰、單人管理情境查詢頻率極低。若未來要修：Tail 改為 snapshot 檔案集合後無鎖掃描（弱化跨檔一致性保證），需先建立穩定的併發量測測試（Mutex 無外部持鎖觀測點，直接斷言互斥順序不穩定）。
 - 新觀察 B（低，列建議未修）：`rotateLocked` 若 rename 鏈完成後 reopen 失敗（磁碟滿/IO 錯誤），`l.file` 保持已 Close handle，後續每筆 Write 持續報錯直到重啟；錯誤經 report 回呼隔離、file 從不設 nil 故無 panic 風險，且會被代理 dispatch recover 與 net/http 內建 recover 兜住。修復需注入檔案系統錯誤的測試介面（Logger 直用 os 包），改造成本高於收益。
 - 本輪零程式碼變更；`go test`/工作樹無異動，僅治理紀錄更新與提交。
+
+## 2026-08-25（第四輪）：IPv6 池新建路徑審查（bug 排除＋瓶頸 B1 修復）
+
+- 觸發：使用者「看看新建 ipv6 池那部份的代碼有沒有 bug 或瓶頸」。審查範圍：`internal/ipv6resource`（store/template/random/state/state_store）、`internal/admin/resource_service.go`（ResourceCoordinator 事務：clone→mutate→network.Reconcile→runtime.Sync→Save→swap，含三層回滾與 rollback 用 `WithoutCancel`）、`internal/network`（manager/kernel_linux/ownership_store）、production 接線（dadTimeout=60s、TimeoutStopSec=90s）。
+- 正確性結論（無 bug）：CreatePool/RefreshPool/DeletePool/CompleteDrain* 引用計數與 `buildStoreFromState` 交叉驗證一致（fixed+active非pinned+draining 各計一次 = References）；drain 批次 ID 單調且 NextBatch ≥ 最高批；address 模式衝突檢查（exists&&!owned 拒絕）；Apply 先存意圖再動 kernel；事務任一步失敗回滾並自癒（owned-but-missing 地址下次 reconcile 清理或重加）；GenerateAddresses 循序掃描有界（prefix 大小）；`capacity==len(pinned)` 的 err-reset 寫法脆弱但語義正確；池地址循序分配（first-fit）屬設計選擇非缺陷（固定地址才用 crypto/rand 隨機）。
+- 瓶頸 B1（中高，已修）：`removeStale`/`releaseAddresses`/`releaseRoutes` 每移除一個地址就 `FileOwnershipStore.Save`（YAML marshal O(n)＋CreateTemp＋Chmod＋Write＋**fsync**＋Rename）——刪 C 地址池 = C 次 fsync＋O(C²) 寫入量；C=4096 估 4–40 秒且服務停止（Shutdown→removeStale）同路徑，逼近 systemd 90s；全程持 coordinator＋ResourceManager 雙鎖阻塞所有資源 API。TDD 修復：改為迴圈後單次批次保存（stateChanged 旗標；部分失敗時仍保存成功移除的部分狀態；crash 視窗內 ownership 檔可能殘留已移除條目 → 下次 reconcile 自癒，與原語義等級相同）。RED：`TestReconcileBatchesOwnershipSavesWhenRemovingStaleAddresses`（saves=5）與 `TestReleaseBatchesOwnershipSaves`（saves=3）失敗；GREEN：saves≤2/≤1；`TestReconcilePersistsSuccessfulRemovalsWhenARemovalFails` 守護部分失敗語義全程通過。
+- 瓶頸 B2（中，列建議）：`linuxKernel.AddressExists` 每次呼叫 = LinkByName（RTM_GETLINK 往返）＋`AddrList` 全量 dump O(介面地址數)——applyAddresses 衝突預檢與 removeStale 對 C 地址各做一次 → O(C²) 解析。修復需 Kernel 介面新增批次查詢（一次 dump 對全部 refs），屬結構性重構；C≤100 時影響亞秒。
+- 瓶頸 B3（中低，列建議）：`waitForDAD` C 個平行 goroutine 各自每 100ms 全量 `AddrList` dump——DAD 窗口（約 1s）內 O(C²/s) CPU 尖峰；C=4096 時可達億級解析/秒。修復需共享單一輪詢器批次檢查全部 pending refs。
+- 瓶頸 B4（低，列建議）：ResourceCoordinator 單一 mutex 涵蓋整個事務（含 netlink＋DAD 最長 60s＋fsync），`Snapshot()` 讀取也走 Lock——大池操作期間資源頁/agent 資源命令阻塞；代理資料路徑（PolicyProvider 自有 RWMutex）不受影響。
+- 規模註記：基礎模式預設容量 10/100/15 時上述瓶頸全部亞秒；僅進階模式大容量（數百～4096）才顯著。B1 修復後刪池/停機的 fsync 數從 O(C) 降為 O(1)。
+- 回歸：`go test ./...`（15 packages）、`go vet`、Linux amd64/arm64 交叉建置全過；治理紀錄更新並提交。

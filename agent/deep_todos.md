@@ -127,3 +127,11 @@
 - [x] 驗證前端 api.ts 無重試風暴、EventSource 關閉冪等，與 main.go 訊號 context 正確貫穿。
 - [x] 新增兩項中低嚴重度觀察列建議未修：eventlog Tail 持鎖全量解碼使查詢期間代理關閉事件寫入排隊（延遲 spike、無崩潰）；rotate 中途 reopen 失敗致日誌寫入持續報錯至重啟（錯誤已隔離、無 panic）。
 - [x] 結論：本輪無高嚴重度缺陷，僅更新治理紀錄。
+
+## 2026-08-25：IPv6 池新建路徑審查（瓶頸修復）
+
+- [x] 全路徑審查新建池：ipv6resource store/template/random/state、admin ResourceCoordinator 事務（clone→mutate→Reconcile→Sync→Save→swap 三層回滾）、network manager、kernel netlink 層。結論：正確性無缺陷（引用計數交叉驗證、drain 批次單調、原子寫、回滾自癒完備）。
+- [x] 發現四項規模相關瓶頸（皆隨池容量 C 平方放大）：B1 removeStale/release 每移除一地址即 fsync 重寫 ownership 檔（刪大池達數十秒、逼近 systemd 90s stop 上限）；B2 AddressExists 每次全量 AddrList dump（O(C²)）；B3 waitForDAD C 個平行輪詢各自全量 dump；B4 coordinator 單鎖涵蓋整個網路事務阻塞管理 API。
+- [x] TDD 修復 B1：ownership Save 批次化（removeStale/releaseAddresses/releaseRoutes 改為迴圈後單次保存，成功移除的部分狀態仍持久化）；RED 兩測（saves=5/3）→ GREEN saves≤2/1，部分失敗語義守護測試通過。
+- [x] B2/B3/B4 列建議未修（需 Kernel 介面批次化重構，收益僅在超大池）。
+- [x] 完整回歷：15 packages、vet、Linux amd64/arm64 交叉建置通過；治理紀錄更新並提交。
