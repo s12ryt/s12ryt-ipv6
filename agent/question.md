@@ -354,3 +354,26 @@
 - `system` 與 `audit` 事件（服務啟停、健康、設定與管理操作稽核）維持同步輸出 stdout/journal，journal 保留診斷價值。
 - 檔案內容不變：Web UI「日誌」頁、`GET /api/logs` 與 `agent logs tail` 仍可查詢完整 proxy 事件；輪替、去敏、清除與統計行為全部不變。
 - TDD 驗收：RED 證明 proxy 事件仍鏡射 stdout；GREEN 後 stdout 僅含 system/audit、檔案仍含全部事件；完整 `go test ./...`、`go vet` 與 Linux 雙架構交叉建置通過。
+
+## 27. IPv6 池輪換（refresh→drain）穩定性修復
+
+更新日期：2026-08-25
+狀態：使用者要求審查「IPv6 池輪換」的 bug 與瓶頸；延續穩定性審查模式，修復決策由 Agent 依授權自行定案。
+
+### 27.1 缺陷 R1（中高）：重啟後 outbound 池 draining 批次永久殘留
+
+- 重啟（含 crash）後所有連線已死，但 outbound 池的 drain tracker consumers 恆非空，且 runtime SourcePool 只含 Active 地址，draining 地址的 `onDrained` 永不觸發，批次永久殘留 state、地址持續掛在網卡、UI 永遠顯示排空中，唯一出口是管理員手動強制排空。
+- 修復：`ResourceCoordinator.CompleteAllDrains(ctx)` 以單一事務完成全部池的全部殘留 draining 批次（clone→逐批 `CompleteDrain`→`commitCandidate`）；無 draining 時為 no-op（零寫入、零網路呼叫）。不經手 drain terminator（重啟後無活連線可終止）。
+- 接線：production `ReconcileResources` 閉包在 `resources.Reconcile(ctx)` 之前呼叫，即節點 Restore 之前完成清殘。
+
+### 27.2 瓶頸 R2（中高）：DrainQueue 逐地址完整事務
+
+- 原 `DrainQueue.Run` 對批次內每個地址各走一次完整 coordinator 事務（state 深拷貝×2＋全量 Reconcile＋runtime Sync＋fsync＋全程持鎖）；刷新閒置 100 地址池即 100 次事務，大池災難性放大。
+- 修復：`DrainedAddressCompleter` 介面改批次簽名 `CompleteDrainedAddresses(ctx, pool, []netip.Addr)`；`DrainQueue.Run` 將每輪取出的批次按池分組（組序＝首次出現序、組內保序）後每池一次呼叫。
+- `ResourceCoordinator.CompleteDrainedAddresses`：驗證與正規化（Unmap、拒 IPv4-mapped、去重）→ 過濾僅剩仍在 draining 的地址（冪等，容忍與 ForceDrain／積壓消費交錯）→ 單一事務完成。`CompleteDrainedAddress`（單地址）保留並委託批次版，語義不變。
+
+### 27.3 驗收
+
+- RED：`drain_queue_test.go` 改批次介面後編譯失敗（介面/方法不存在）；`resource_service_test.go` 對 `CompleteDrainedAddresses`/`CompleteAllDrains` 編譯失敗。
+- GREEN：app/admin 全綠；新契約涵蓋按池分組保序、單一事務（saves=1）、混合已完成/重複地址冪等、無 draining no-op、雙批次單事務清除、無效輸入拒絕。
+- 完整 `go test ./...`、`go vet`、Linux amd64/arm64 交叉建置通過；治理紀錄同步更新並推送。

@@ -167,3 +167,10 @@
 - 瓶頸 B4（低，列建議）：ResourceCoordinator 單一 mutex 涵蓋整個事務（含 netlink＋DAD 最長 60s＋fsync），`Snapshot()` 讀取也走 Lock——大池操作期間資源頁/agent 資源命令阻塞；代理資料路徑（PolicyProvider 自有 RWMutex）不受影響。
 - 規模註記：基礎模式預設容量 10/100/15 時上述瓶頸全部亞秒；僅進階模式大容量（數百～4096）才顯著。B1 修復後刪池/停機的 fsync 數從 O(C) 降為 O(1)。
 - 回歸：`go test ./...`（15 packages）、`go vet`、Linux amd64/arm64 交叉建置全過；治理紀錄更新並提交。
+
+## 2026-08-25 第五輪操作記錄（池輪換審查＋R1/R2 修復）
+
+- 讀取：internal/app/drain_queue.go、drain_queue_test.go、internal/admin/resource_service.go（CompleteDrainedAddress/ForceDrain/transact/commitCandidate/drainingBatch/isDrainingAddress）、resource_service_test.go（helper：memoryResourceStateStore/fakeResourceNetwork/fakeResourceRuntime/fakeDrainTerminator/resourceStateWithPool）、internal/ipv6resource/store.go（CompleteDrain/CompleteDrainedAddress）、internal/app/production_build.go（NewDrainQueue 接線 L251、ReconcileResources 閉包 L432）、agent/question.md。
+- 修改：internal/app/drain_queue.go（介面改 CompleteDrainedAddresses 批次簽名、Run 按 pool 分組保序、groupDrainedAddressesByPool）；internal/app/drain_queue_test.go（recordingDrainCompleter 改批次、新增 TestDrainQueueGroupsCompletionsByPool、既有兩測試適配、waitForDrainAddresses）；internal/admin/resource_service.go（新增 CompleteAllDrains 與 CompleteDrainedAddresses、CompleteDrainedAddress 改委託）；internal/admin/resource_service_test.go（新增 5 測試：批次單事務、skip finished+去重、nothing draining no-op、無效輸入、CompleteAllDrains 清殘×2）；internal/app/production_build.go（ReconcileResources 先 CompleteAllDrains 再 Reconcile）；agent/question.md（§27）、agent/deep_todos.md、agent/memory.md。
+- 驗證指令：go test ./internal/app ./internal/admin（RED 編譯失敗→GREEN）；go build ./... && go vet ./... && go test ./... -count=1（15 pkgs 全綠）；CGO_ENABLED=0 GOOS=linux GOARCH=amd64/arm64 go build（雙架構 OK）。
+- 提交：單一 fix 提交（R1+R2 同檔耦合）＋docs 提交，推送 origin/main。

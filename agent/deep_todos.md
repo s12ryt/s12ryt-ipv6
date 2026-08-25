@@ -135,3 +135,12 @@
 - [x] TDD 修復 B1：ownership Save 批次化（removeStale/releaseAddresses/releaseRoutes 改為迴圈後單次保存，成功移除的部分狀態仍持久化）；RED 兩測（saves=5/3）→ GREEN saves≤2/1，部分失敗語義守護測試通過。
 - [x] B2/B3/B4 列建議未修（需 Kernel 介面批次化重構，收益僅在超大池）。
 - [x] 完整回歷：15 packages、vet、Linux amd64/arm64 交叉建置通過；治理紀錄更新並提交。
+
+## 2026-08-25 第五輪：IPv6 池輪換（refresh→drain）審查與修復
+
+- 觸發：使用者要求審查「IPv6 池輪換那部份的代碼有沒有 bug 或瓶頸」。審查鏈：RefreshPool → drain_tracker/drain_terminator → DrainQueue → SourcePool Replace → OutboundRegistry.Sync → RuntimeResourceSynchronizer.Sync → 啟動序列（service.go ReconcileResources 先於 RestoreNodes 先於 RunNAT64）。
+- 缺陷 R1（中高，已修）：重啟（含 crash）後 outbound 池 draining 批次永久殘留——outbound 池 consumers 恆非空且 runtime SourcePool 只含 Active，onDrained 永不觸發；批次殘留 state、地址掛網卡、UI 永遠排空中。修復：`ResourceCoordinator.CompleteAllDrains(ctx)` 單一事務完成全部殘留批次（無 draining 時 no-op），production `ReconcileResources` 閉包於 `resources.Reconcile` 前呼叫（節點 Restore 前）。
+- 瓶頸 R2（中高，已修）：DrainQueue 逐地址完整 coordinator 事務（每地址 2×state 深拷貝＋全量 Reconcile＋runtime Sync＋fsync＋全程持鎖），100 地址池刷新＝100 次事務。修復：completer 介面改批次簽名 `CompleteDrainedAddresses(ctx, pool, []netip.Addr)`，DrainQueue 按池分組保序後每池一次呼叫；coordinator 批次版驗證/去重/過濾非 draining（冪等）後單一事務完成；單地址版保留並委託批次版。
+- 其餘確認安全：CompleteDrainedAddress 冪等、ForceDrain 與積壓消費交錯無害、registry.draining 與 state 同步提交、Prepare/mark 鎖外回呼無競態、Enqueue wake 緩衝 1 無丟失、三層回滾正確。觀察（低）store.go automaticCount==0 覆蓋 err 的怪異寫法無實害，不修。
+- TDD：RED＝drain_queue_test.go 批次介面編譯失敗＋resource_service_test.go 新方法不存在編譯失敗；GREEN＝app/admin 全綠。新測試：按池分組保序、單一事務 saves=1、混合已完成/重複地址冪等、無 draining no-op、CompleteAllDrains 雙批次單事務、無效輸入拒絕。
+- 驗證：`go build ./...`、`go vet ./...`、`go test ./...`（15 packages）全綠；Linux amd64/arm64 交叉建置通過。提交：fix(resources) 批次完成＋啟動清殘＋docs。
