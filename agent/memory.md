@@ -181,3 +181,14 @@
 - 修改：manager.go（Opening.PortEnd＋normalize 驗證/dedup/排序）；backend_linux.go（範圍 Gte/Lte）；firewall_coordinator.go（relayScope 計數＋relayPortMin/Max＋建構子 5 參數）；production_build.go（接線 settings.Ports.Min/Max）；policy_provider.go（Policy() 免 clone＋文檔、刪 cloneAddressSet）；destination.go（DestinationPolicy 唯讀文檔）；manager_test.go（+3 測試）；firewall_coordinator_test.go（全檔改寫）；backend_linux_test.go（範圍表達式測試）；policy_provider_test.go（imports reflect/sync/time＋mutation 斷言改寫＋3 新測試＋managedAddressState helper）；agent/question.md（§28）、deep_todos.md、memory.md。
 - 驗證記錄：F1 RED=go test 編譯失敗（PortEnd/參數數）＋GOOS=linux test -c 同因；GREEN=firewall/node/app 三套件綠＋WSL firewall binary PASS。F2 RED=TestPolicyProviderPolicyReturnsZeroCopyViews "copied the local address set"；GREEN=6/6 測試綠。go vet OK；go test ./... 15 packages 全綠；CGO_ENABLED=0 GOOS=linux GOARCH=amd64/arm64 build OK。-race 不可執行（無 gcc，記錄於 §28.2）。
 - 提交：F1 perf(firewall)＋F2 perf(app) 與 docs，推送 origin/main。
+
+## 2026-08-28 第七輪操作記錄（後端核心與長連線修復）
+
+- 契約：完成三輪澄清，將全後端核心範圍、長連線逾時/half-close/UDP 雙向活動語意、相容性與驗收門檻寫入 `agent/question.md` §29；本輪不新增 schema 或公開 API。
+- UDP RED：`TestUDPAssociationRemoteTrafficRefreshesAssociationIdleTimeout` 因第二次遠端回應時 pipe 已被 association 固定逾時關閉；`TestUDPAssociationRemovesMappingWhenClientWriteFails` 因一秒後 stale mapping 仍存在；`TestUDPAssociationReportsPacketDeadlineFailure` 因原始 deadline 錯誤被吞，僅回 closed-network 錯誤。GREEN：`udp_relay.go` 加入 association deadline 刷新、async error 傳遞與 WriteTo 失敗移除 mapping；proxy 全套通過。
+- Node RED：`TestListenerRuntimeMetadataUpdatePreservesActiveConnections` 先因 rename 更新重建 handler 失敗；加入 no-op 情境後再次因 builder calls=2 失敗。GREEN：`ListenerRuntimeFactory.Replace` 對 runtime 行為等價設定只更新 config，保留 handler/active connections；真正行為設定變更測試改以 HandshakeTimeout 變更守護重建語意；node 全套通過。
+- Eventlog RED：`TestLoggerRecoversAfterRotationFailure` 與 `TestLoggerRecoversAfterClearFailure` 均以非空備份目錄注入檔案操作失敗，後續 Write 原先回 `file already closed`。GREEN：輪替/Clear 失敗 defer 呼叫 `reopenCurrentLocked`，成功恢復 append handle/size，復原也失敗時 `errors.Join`；eventlog 全套通過。
+- TCP characterization：`TestRelayConnectionsZeroIdleTimeoutDoesNotSetTunnelDeadlines` 與 `TestRelayConnectionsHalfClosePreservesReverseTraffic` 新增後即通過，確認零逾時不設 deadline、單向 EOF 後反向資料可完成；未修改 relay 正式碼。
+- 修改：`internal/proxy/udp_relay.go`、`socks5_udp_test.go`、`relay_test.go`；`internal/node/runtime.go`、`runtime_test.go`；`internal/eventlog/logger.go`、`logger_test.go`；治理契約與紀錄。`agent/項目表.md` 無需更新，因無新增檔案、模組或依賴關係。
+- 驗證：改碼前基線 `go test ./...` 與 vet 全綠；最終 `go test ./... -count=1 -timeout=300s` 15 packages、`go vet ./...`、web `npm test -- --run` 13 files/73 tests、`npm run lint`、`npm run build`、Linux amd64/arm64 CGO=0 build、`git diff --check` 全通過。
+- 未完整驗證：Windows 無 Linux root/network namespace，未執行真實 netlink/nftables integration；無 GCC/CGO，未執行 `go test -race`；未安裝 gopls，LSP diagnostics 無法執行。以可攜單元測試、vet 與雙架構交叉建置替代；本輪未提交或推送。

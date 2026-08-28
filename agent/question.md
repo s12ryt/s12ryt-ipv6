@@ -395,3 +395,35 @@
 - 修復（契約變更）：Sync/RefreshHostAddresses 本為 build-new-then-swap，`Policy()` 改回傳唯讀共享視圖（零複製）；`DestinationPolicy` 文檔明示「呼叫方不得修改」；全 codebase grep 證明零寫入消費者。
 - 驗收：TestPolicyProviderPolicyReturnsZeroCopyViews（reflect Pointer identity，RED 於 clone 版失敗）；TestPolicyProviderPublishedViewsSurviveLaterUpdates（swap 語義守護）；TestPolicyProviderConcurrentPolicySyncAndRefresh（併發功能測試）；既有 mutation 防護斷言改為唯讀視圖契約斷言。
 - 限制：-race 因本機無 cgo/gcc 無法執行；並發安全以結構性論證（不可變快照發佈＋RLock 讀取＋零寫入消費者）＋併發功能測試為證據。
+
+## 29. 第七輪自主疊代：後端核心與代理長連線穩定性
+
+更新日期：2026-08-28
+狀態：使用者要求自主找出並修復底層缺陷；本節為本輪實作與驗收契約。
+
+### 29.1 範圍與優先順序
+
+- 稽核範圍為全部 Go 後端核心：代理資料路徑、節點與服務生命週期、IPv6 資源、網路、防火牆、DNS64、policy、持久化及管理控制；前端僅處理後端公開契約變更所必要的相容調整。
+- 最高優先線索為「長連線大致在固定時間後失效」；目前無法確定代理入口、流量方向、觸發條件或實際 timeout 設定，因此必須同時驗證 SOCKS5 TCP、SOCKS5 UDP、HTTP CONNECT 與 mixed 共用路徑。
+- 修復本輪所有可由決定性測試、靜態契約或可執行證據證明的高、中、低風險缺陷；不以臆測改碼，不新增功能，不進行與缺陷無關的大規模重構。
+
+### 29.2 長連線可觀察契約
+
+- TCP `tunnel_idle_timeout=0` 時，程式不得對已建立 tunnel 保留或新增資料傳輸 deadline；連線只因任一端關閉、不可恢復傳輸錯誤、節點停止或 context 取消而結束。
+- TCP `tunnel_idle_timeout>0` 時，以雙向「實際無成功傳輸」時間計算閒置；任一方向成功傳輸皆刷新期限。單向持續傳輸不得因另一方向無資料而 timeout。
+- TCP half-close 只關閉已完成方向的寫入側，不得提前關閉仍在傳輸的反方向；relay 必須在兩個方向均結束或 context 取消後回收。
+- SOCKS5 UDP association 與每目的 mapping 的雙向成功活動均須刷新對應 idle 期限；控制 TCP 關閉或真正閒置逾時後才回收。
+- 各入口完成握手後必須清除握手 deadline；mixed 分流不得把辨識階段 deadline 洩漏至下游 handler 或既有 tunnel。
+
+### 29.3 相容性、遷移與錯誤語意
+
+- 維持既有 CLI、HTTP API、設定欄位、代理協定與資料格式的公開行為；錯誤不得洩漏帳密、URL path/header/content 或內部敏感資訊。
+- 若可證明的修復必須升級持久化 schema，新版本須可讀舊狀態並以原子方式向前遷移；不要求舊版本讀取新格式。未有必要證據時不得調升 schema。
+- 保持 IPv6-only 出站、DNS64/NAT64、來源地址黏著、排空與防火牆 ownership 等既有安全邊界。
+
+### 29.4 TDD 與完成門檻
+
+- 每項正式碼修復前先新增可穩定重現的 RED 測試，確認因目標缺陷失敗；再以最小 GREEN 修復並執行鄰近回歸，最後僅在全綠下重構。
+- 代理驗收至少涵蓋：零 timeout 不設 deadline、非零 timeout 雙向刷新、單向長傳輸、half-close、context 取消、UDP 雙向刷新、各入口握手 deadline 清除。
+- 全後端掃描須檢查 panic、死鎖/競態、goroutine/FD/記憶體洩漏、錯誤吞沒、交易回滾、原子持久化、邊界值、協定偏差、安全性及不必要的熱路徑成本。
+- 完成時須通過受影響測試、`go test ./... -count=1 -timeout=300s`、`go vet ./...`、前端既有 test/lint/build（若後端 embed 或契約受影響），以及 Linux amd64/arm64 CGO-disabled 交叉 build；Linux root/netns 或 race 因本機環境不可執行時須明列替代證據與剩餘風險。

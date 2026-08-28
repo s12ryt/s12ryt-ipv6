@@ -153,3 +153,15 @@
 - F2（中，資料路徑）：Policy() 每出站連線 clone 兩個地址集。修復（契約變更 snapshot→唯讀視圖）：Policy() 免 clone 回傳共享引用；DestinationPolicy/Policy() 文檔明示唯讀；grep 全 codebase 零寫入消費者。TDD：ZeroCopy identity 測試 RED（clone 版 fail）→GREEN；swap 語義守護＋併發功能測試；既有 mutation 防護斷言改寫為新契約。
 - 殘餘：-race 無 cgo/gcc 環境不可執行（結構性論證＋功能渉試替代）；真實 netlink 行為列 integration 風險。
 - 迴歸：go vet＋15 packages 全綠＋Linux amd64/arm64 交叉建置。
+
+## 2026-08-28 第七輪：後端核心與代理長連線穩定性
+
+- [x] 依 `agent/question.md` §29 稽核全 Go 後端核心，優先追查 SOCKS5 TCP/UDP、HTTP CONNECT 與 mixed 長連線；改碼前基線 `go test ./...` 15 packages 與 `go vet ./...` 全通過。
+- [x] 修復 UDP association 只由 client datagram 刷新 idle deadline，導致 remote-only 活動仍固定逾時；遠端成功回應現在同步刷新 association deadline，刷新失敗保留原始錯誤並讓主迴圈收斂。
+- [x] 修復 UDP 回寫 client 失敗後 mapping 未移除，以及 packet deadline 設定失敗被吞沒；兩者皆有獨立 RED 回歸測試。
+- [x] 修復 running node 的 no-op 與純 Name/Folder 更新無條件重建 handler、切斷 active 長連線；等價 runtime 設定走 metadata fast path，認證、限制、逾時、資源或入站設定變更仍重建並關閉舊 session。
+- [x] 修復 eventlog rotation 與 Clear 在中途檔案操作失敗後留下 closed file handle；失敗仍回報，並以 append reopen 恢復 logger 可用性，復原失敗以 `errors.Join` 保留雙重原因。
+- [x] 補 TCP relay 行為特徵測試：idle timeout=0 不設定 tunnel deadline；half-close 後反向流量仍可完成。兩測新增後即通過，確認正式碼既有行為符合契約。
+- [x] 核心掃描確認 eventlog Tail 持鎖、runtime Stop、DAD、背景 goroutine/ticker、原子狀態 store 無可穩定證明的新正確性缺陷，未做臆測性重構。
+- [x] 完整驗證：`go test ./... -count=1 -timeout=300s`、`go vet ./...`、web 13 files/73 tests、lint、Vite build、Linux amd64/arm64 CGO=0 build、`git diff --check` 全通過。
+- [x] 環境限制：Windows 無 root/network namespace，未跑真實 netlink/nftables integration；無 GCC/CGO，未跑 `-race`；未安裝 gopls，故以 test/vet/build 替代 LSP 診斷。
