@@ -565,3 +565,46 @@ TDD 證據：
 
 驗證：`go vet ./...` 乾淨；`go test ./... -count=1 -timeout=300s` 15 packages 全綠；本次變更檔案 gofmt 乾淨（`internal/admin/http_test.go`、`internal/network/manager_test.go`、`internal/node/firewall_coordinator.go` 為基線既有格式偏離，不在本次 diff，不動）；Linux amd64 CGO_ENABLED=0 交叉 build 成功（arm64 與本輪前各輪同機制，未重跑）。環境限制照舊：無 root/netns（integration 未跑）、無 cgo（-race 未跑）。
 
+## 34. 第十二輪自主疊代：底層深挖＋殘留建議項收尾
+
+更新日期：2026-08-29
+狀態：使用者觸發「自主疊代升級,我覺得代碼底層還有bug,請你找出並修復」；經澄清：無具體症狀（全面深挖歷輪覆蓋最少區域）、歷輪殘留建議項一併修復。本節為本輪實作與驗收契約。技術細節由 Agent 依既有授權自行定案。
+
+### 34.1 深挖範圍（歷輪覆蓋最少的底層區域）
+
+- `internal/node`：inbound.go / outbound.go / resolved_runtime.go / resource_runtime.go / udp_factory.go / handler_builder.go（入站解析、出站 registry、協定 handler 組裝的完整邊角——歷輪僅掃 manager/runtime/persistent/drain 鏈）。
+- `internal/proxy`：port_allocator.go（歷輪僅查 fd 洩漏，衝突/重用/預約邏輯未深挖）、socket_system.go、http_proxy.go 非 CONNECT 轉送完整路徑。
+- `internal/admin`：nodes.go / resources.go / operations.go / http.go 的 handler 細節（第八輪掃巨觀，DTO 邊角未逐行）、password_store.go / reset_password.go。
+- `internal/app`：traffic_observer.go、health.go、statistics.go、deferred_firewall.go、deferred_drain.go、startup_state.go、config_store.go。
+- 前十一輪修復引入的新程式碼複查（第十輪批次查詢、第十一輪 RemoveNode/UnregisterSecret/Delete 掛鉤/control recover）。
+- 不重掃前十一輪已證實安全的區域，除非有衝突新證據。
+
+### 34.2 殘留建議項（使用者授權一併修復）
+
+- S1：dns64 cache stampede——併發同 key 快取 miss 觸發重複上游 DoT 查詢；以 singleflight 類去重（同 key 併發只發一次上游查詢），錯誤語意與快取契約不變。
+- S2：eventlog secret 註冊計數殘留——節點 Update 輪換帳密時舊值計數不減、RestoreNodes 重啟重複註冊計數 +1，殘留至重啟；補齊反註冊時機，遮蔽效果不得減弱。
+- B4（ResourceCoordinator 單鎖涵蓋網路事務）維持列建議不動（高風險結構重構）。
+
+### 34.3 修復與驗收
+
+- 每項缺陷以 RED（可穩定重現的失敗測試）→ GREEN（最小修復）→ REFACTOR 完成；殘留項同樣先寫 RED。
+- 只修可由決定性測試證明的缺陷；不做臆測性重構；維持 §29.3 相容性、錯誤語意與安全邊界。
+- 完成門檻：受影響測試、`go test ./... -count=1 -timeout=300s`、`go vet ./...`、前端 test/lint/build（若契約受影響）、Linux amd64/arm64 CGO=0 交叉 build；環境限制照舊明列。
+
+### 34.4 完成紀錄（2026-08-29）
+
+深挖結論（均無新缺陷，全區掃畢）：
+
+- `internal/node`：inbound.go（Sync 驗證＋原子 swap、Resolve fixed/pool ambiguous 檢查）、outbound.go（syncMu 序列化 Sync/ForceDrain、值語意 swap、既有池保留 SourcePool 物件 Replace）、resolved_runtime（純委派）、resource_runtime（同步順序第五輪已挖）、udp_factory（selectUDPRelayBind family 比對＋wildcard fallback）、handler_builder（HTTP 不建 relay）——無缺陷。觀察：dual 棧＋空 active 池時僅監聽 IPv4 為既有行為。
+- `internal/proxy`：port_allocator（衝突檢查＝wildcard 覆蓋語意、ReleaseEndpoints 鎖序 r.mu→a.mu 無死鎖、normalizeBindSpecs 自身衝突檢查）、socket_system（驗證完整）、http_proxy（CONNECT/absolute-form、constant-time auth、relay 第七輪已挖）——無缺陷。觀察：ReleaseEndpoints 在 Close 失敗時仍從 reserved/bindings 移除（真實 binder 下無法穩定重現，列觀察）；非 CONNECT 轉送無 idle timeout（契約未要求）。
+- `internal/admin`：operations.go（handler 全 RequireSession/RequireMutation、parseLogQuery limit 1-1000、validateResolvers 借 Default().Validate）、password_store（原子寫）、reset_password（control 優先→ErrControlUnavailable→ctx 檢查→offline lock，named return＋errors.Join）、nodes.go（batch 預檢 sameBatchSettings、ID 不可變、ErrPreviousRuntimeCleanup→200+warning、folderAction 逐項 Multi-Status）、resources.go（全部 RequireMutation、parseOptionalResourceAddress native IPv6）——無缺陷。writeResourceError 全部映射 400 為既有行為。
+- `internal/app`：traffic_observer（去敏欄位、Rejected=Opened+Closed(0,0,true)）、health（RWMutex＋排序）、statistics（fs.ErrNotExist 容錯）、deferred_firewall/deferred_drain（once Set＋RLock 取引用鎖外呼叫）、startup_state（load 失敗→read-only 保護＋吞錯）、config_store（LoadOrCreate 冪等、update clone→change→Validate→Save→swap）——無缺陷。
+- 前十/十一輪新碼複查（含 kernel_linux.go WaitAddressesReady）：分組輪詢、錯誤聚合、ctx 取消語意正確——無缺陷。觀察：全部地址就緒後仍對各介面輪詢 AddrList（啟動期短暫行為，非缺陷，不修）。
+
+兩項殘留建議項修復（各自完整 TDD 週期）：
+
+- S1（dns64 cache stampede）：`internal/dns64/resolver.go` 新增 `lookupCall`（done channel＋entry＋err）與 `inFlight map[cacheKey]*lookupCall`；`lookup` 在 cache miss 後經 `beginLookup` 加入既有 call（follower 等待 done 或自身 ctx 取消）或成為 leader；leader 以抽出之 `queryEndpoints`（原逐端點 failover/TTL/negativeTTL/clamp 邏輯逐字保留）查詢，完成後持 mu 寫 cache＋evict＋刪 inFlight，close done 廣播；成功與失敗均由全部等待者共享（追隨者收到 leader 相同錯誤）；查詢全程不持 r.mu；不引入新依賴。UpdateEndpoints 清 cache 時不動 in-flight（與原行為等價）。RED：`TestResolverCollapsesConcurrentLookupsForSameNameIntoSingleQuery`、`TestResolverSharesLookupFailureWithConcurrentWaiters`（blockingQueryer 阻斷上游，8 併發同 key 斷言上游查詢==1；修復前實測 8 次）。
+- S2（secret 註冊計數殘留）：`internal/app/node_secrets.go` `Update` 於 delegate.Update 前以 `Get(id)` 捕獲舊 node；成功（含 ErrPreviousRuntimeCleanup）後先 `unregister(existing)` 再 `register(updated)`——帳密不變時淨零、輪換時舊值歸零移除、多節點共用密碼語意保持（計數設計）；Get 找不到時維持只 register（與 Create 同語意）。RestoreNodes 屬新進程計數從零，無殘留，不修。RED：`TestSecretRegisteringNodeServiceUpdateReleasesRotatedCredentials`（修復前 user-a/pass-a=1）、`TestSecretRegisteringNodeServiceUnchangedUpdateKeepsReferenceCountBalanced`（修復前=2），以 countingRegistrar 計數 map 斷言完整生命週期（Create→Update×N→Delete）歸零。
+
+驗證：`go test ./... -count=1 -timeout=300s` 15 packages 全綠；`go vet ./...` 乾淨；Linux amd64/arm64 CGO_ENABLED=0 交叉 build 成功。前端未動（無契約變更），web test/lint/build 未重跑。環境限制照舊：無 root/netns（integration 未跑）、無 cgo（-race 未跑）。
+

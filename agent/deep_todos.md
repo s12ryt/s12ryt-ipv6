@@ -208,3 +208,11 @@
 - [x] 修復 4：control.go handleConn named return＋頂層 recover——panic 時 best-effort 回固定錯誤 "internal control error"（不洩漏 panic 內容）、回傳錯誤給呼叫端；recover defer 註冊於 connection.Close 後（unwind 先寫回應再關連線）；Serve goroutine 與 HandleConn 同步路徑同受保護。RED=TestControlServerHandleConnRecoversFromHandlerPanic（panic 崩潰測試進程）。
 - [x] 回歸：go vet 乾淨；go test ./... -count=1 -timeout=300s 15 packages 全綠；本次變更檔案 gofmt 乾淨（http_test.go/manager_test.go/firewall_coordinator.go 為基線既有偏離，不在 diff 不動）；Linux amd64 CGO=0 build 成功。
 - [x] 環境限制照舊：無 root/netns（integration 未跑）、無 cgo（-race 未跑）；arm64 交叉 build 未重跑（同機制，amd64 已驗證）。
+
+## 2026-08-29 第十二輪：底層深挖＋S1/S2 殘留項收尾
+
+- [x] 契約 §34（使用者「自主疊代升級,底層還有 bug」）：深挖 node inbound/outbound/resolved_runtime/resource_runtime/udp_factory/handler_builder、proxy port_allocator/socket_system/http_proxy、admin nodes/resources/operations/password_store/reset_password、app traffic_observer/health/statistics/deferred_*/startup_state/config_store、前十/十一輪新碼複查；殘留 S1/S2 修復；B4 不動。
+- [x] 基線全綠（15 packages＋vet）。深挖 A-E 全部完成，無新缺陷；觀察項：dual 棧＋空 active 池僅聽 IPv4（既有行為）、ReleaseEndpoints Close 失敗仍移除（無法穩定重現）、非 CONNECT 轉送無 idle timeout（契約未要求）、WaitAddressesReady 全就緒後仍輪詢 AddrList（啟動期短暫，不修）。
+- [x] 修復 S1：dns64 cache stampede——Resolver 新增 inFlight map＋lookupCall；lookup cache miss 後 leader 以 queryEndpoints（原 failover/TTL 語意逐字保留）查詢、followers 共享結果/錯誤並尊重自身 ctx；不持鎖查詢、零新依賴。RED 兩測（blockingQueryer 8 併發同 key，修復前上游 8 次）。
+- [x] 修復 S2：secret 註冊計數殘留——Update 前 Get 捕獲舊 node，成功後先 unregister 舊值再 register 新值（不變淨零、輪換歸零、共用密碼語意保持）。RED 兩測（countingRegistrar 生命週期歸零；修復前輪換殘留 1、不變殘留 2）。
+- [x] 完整回歷：go test ./... -count=1 15 packages、vet、Linux amd64/arm64 CGO=0 交叉 build 全過。環境限制照舊（無 root/netns、無 -race）；前端未動未重跑。

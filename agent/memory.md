@@ -222,3 +222,11 @@
 - 驗證：四項各自 RED（方法/建構子 undefined 編譯失敗×3、panic 崩潰×1）→ GREEN；go vet 乾淨；go test ./... -count=1 -timeout=300s 15 packages 全綠；本次變更檔案 gofmt 乾淨（3 個基線既有格式偏離檔案不在 diff 不動）；Linux amd64 CGO=0 交叉 build 成功。
 - 環境限制：無 root/netns（integration 未跑）、無 cgo（-race 未跑）；arm64 build 未重跑（同機制）。
 - 提交：fix(app,admin,stats,eventlog) 防禦修復＋docs(agent) 治理檔，推送 origin/main。
+
+## 2026-08-29 第十二輪操作記錄（自主疊代：深挖＋S1/S2 收尾）
+
+- 讀取：internal/network/kernel_linux.go（WaitAddressesReady 複查）；internal/dns64/resolver.go＋resolver_test.go 全文；internal/app/node_secrets.go＋node_secrets_test.go 全文；agent/question.md §33-34、agent/deep_todos.md、agent/memory.md 尾部。
+- 深挖（全區無新缺陷）：node inbound/outbound/resolved_runtime/resource_runtime/udp_factory/handler_builder；proxy port_allocator/socket_system/http_proxy；admin nodes/resources/operations/password_store/reset_password；app traffic_observer/health/statistics/deferred_firewall/deferred_drain/startup_state/config_store；kernel_linux.go WaitAddressesReady。
+- 修改：internal/dns64/resolver.go（lookupCall 型別、inFlight map、beginLookup、queryEndpoints 抽出、lookup singleflight 化）；internal/dns64/resolver_test.go（blockingQueryer、resolveConcurrently helper、strings import、兩個併發測試）；internal/app/node_secrets.go（Update 前 Get 捕獲、成功後 unregister 舊值＋register 新值）；internal/app/node_secrets_test.go（secretTestNodeService 加 current/hasCurrent 生命週期狀態、countingRegistrar、assertSecretCountsDrained、兩個生命週期測試）；agent/question.md（§34.4）、agent/deep_todos.md（第十二輪段）、agent/memory.md（本節）。
+- 驗證：S1 RED＝兩測「8 upstream queries, want 1」→ GREEN dns64 全綠；S2 RED＝「user-a reference count = 1/2 after full lifecycle, want 0」→ GREEN app 全綠；完整回歸 go test ./... -count=1 15 packages、go vet、Linux amd64/arm64 CGO=0 交叉 build 全過。前端未動未重跑。
+- 環境限制：無 root/netns（integration 未跑）、無 cgo（-race 未跑）。
