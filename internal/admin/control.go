@@ -105,7 +105,12 @@ func (s *ControlServer) Serve(ctx context.Context, listener net.Listener) error 
 			}
 			return fmt.Errorf("accept control connection: %w", err)
 		}
-		_ = s.handleConn(ctx, connection)
+		// Serve each connection in its own goroutine: a long-running agent
+		// request (apply defaults to ten minutes) must not block health
+		// checks or password resets on other connections. Context
+		// cancellation still aborts every handler through the per-connection
+		// watcher in handleConn.
+		go s.handleConn(ctx, connection)
 	}
 }
 

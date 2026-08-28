@@ -277,6 +277,65 @@ func TestControlServerCancellationStopsActiveAgentRequest(t *testing.T) {
 	}
 }
 
+func TestControlServerServesSecondConnectionWhileFirstIsBusy(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := &blockingAgentControlHandler{started: make(chan struct{})}
+	resetter := &fakePasswordResetter{result: "generated-password"}
+	server, err := NewControlServerWithAgentLimits(resetter, handler, 5*time.Second, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx, listener) }()
+
+	// A long-running agent request (apply can take minutes) occupies the
+	// first connection. Health checks and reset-password calls from the
+	// installer must not queue behind it.
+	busy, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	if _, err := busy.Write([]byte(`{"action":"agent","timeout_ms":5000,"request":{"command":"status"}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-handler.started:
+	case <-time.After(time.Second):
+		t.Fatal("agent handler did not start")
+	}
+
+	second, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if _, err := second.Write([]byte(`{"action":"reset_password","new_password":""}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	responses := make(chan ControlResponse, 1)
+	go func() {
+		var response ControlResponse
+		if err := json.NewDecoder(second).Decode(&response); err == nil {
+			responses <- response
+		}
+		close(responses)
+	}()
+	select {
+	case response := <-responses:
+		if !response.OK || response.Password != "generated-password" {
+			t.Fatalf("second connection response = %#v", response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second control connection was blocked by the first connection's handler")
+	}
+}
+
 func exchangeControl(t *testing.T, server *ControlServer, request string) (ControlResponse, error) {
 	t.Helper()
 	client, service := net.Pipe()
