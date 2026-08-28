@@ -63,6 +63,16 @@ type cacheEntry struct {
 	expires   time.Time
 }
 
+// lookupCall represents one in-flight upstream query. Concurrent lookups for
+// the same cache key share a single call: the leader executes the query while
+// followers wait on done, so a cache miss under load cannot stampede the
+// upstream resolvers.
+type lookupCall struct {
+	done  chan struct{}
+	entry cacheEntry
+	err   error
+}
+
 type Resolver struct {
 	mu              sync.RWMutex
 	endpoints       []Endpoint
@@ -70,6 +80,9 @@ type Resolver struct {
 	now             func() time.Time
 	cache           map[cacheKey]cacheEntry
 	cacheMaxEntries int
+	// inFlight is guarded by mu and maps a cache key to the call currently
+	// querying the upstream endpoints for it.
+	inFlight map[cacheKey]*lookupCall
 }
 
 func NewResolver(endpoints []Endpoint, queryer Queryer, now func() time.Time) (*Resolver, error) {
@@ -88,6 +101,7 @@ func NewResolver(endpoints []Endpoint, queryer Queryer, now func() time.Time) (*
 		now:             now,
 		cache:           make(map[cacheKey]cacheEntry),
 		cacheMaxEntries: defaultCacheMaxEntries,
+		inFlight:        make(map[cacheKey]*lookupCall),
 	}, nil
 }
 
@@ -180,9 +194,50 @@ func (r *Resolver) lookup(ctx context.Context, name string, record RecordType) (
 		return entry, nil
 	}
 
+	call, leader := r.beginLookup(key)
+	if leader {
+		call.entry, call.err = r.queryEndpoints(ctx, key, endpoints, now)
+		r.mu.Lock()
+		if call.err == nil {
+			r.cache[key] = call.entry
+			r.evictLocked(key, now)
+		}
+		delete(r.inFlight, key)
+		r.mu.Unlock()
+		close(call.done)
+	}
+	select {
+	case <-call.done:
+	case <-ctx.Done():
+		return cacheEntry{}, ctx.Err()
+	}
+	if call.err != nil {
+		return cacheEntry{}, call.err
+	}
+	result := call.entry
+	result.addresses = append([]netip.Addr(nil), result.addresses...)
+	return result, nil
+}
+
+// beginLookup joins the in-flight call for key, or registers a fresh call and
+// reports leadership so exactly one caller queries the upstream endpoints.
+func (r *Resolver) beginLookup(key cacheKey) (*lookupCall, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if existing, ok := r.inFlight[key]; ok {
+		return existing, false
+	}
+	call := &lookupCall{done: make(chan struct{})}
+	r.inFlight[key] = call
+	return call, true
+}
+
+// queryEndpoints walks the endpoints in order and returns the first
+// successful answer; it runs without holding r.mu.
+func (r *Resolver) queryEndpoints(ctx context.Context, key cacheKey, endpoints []Endpoint, now time.Time) (cacheEntry, error) {
 	var failures []error
 	for _, endpoint := range endpoints {
-		result, err := r.queryer.Query(ctx, endpoint, name, record)
+		result, err := r.queryer.Query(ctx, endpoint, key.name, key.record)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("%s: %w", endpoint.Name, err))
 			continue
@@ -193,16 +248,11 @@ func (r *Resolver) lookup(ctx context.Context, name string, record RecordType) (
 		} else {
 			ttl = clampTTL(ttl)
 		}
-		entry = cacheEntry{
+		return cacheEntry{
 			addresses: append([]netip.Addr(nil), result.Addresses...),
 			source:    endpoint.Name,
 			expires:   now.Add(ttl),
-		}
-		r.mu.Lock()
-		r.cache[key] = entry
-		r.evictLocked(key, now)
-		r.mu.Unlock()
-		return entry, nil
+		}, nil
 	}
 	return cacheEntry{}, fmt.Errorf("all DNS resolvers failed: %w", errors.Join(failures...))
 }

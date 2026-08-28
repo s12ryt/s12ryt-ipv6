@@ -15,15 +15,22 @@ type secretTestNodeService struct {
 	existingFound bool
 	deleteErr     error
 	deletedID     string
+	// current tracks the node state after Create/Update so Get behaves like
+	// the real service while tests drive a full lifecycle.
+	current    node.Node
+	hasCurrent bool
 }
 
 func (s *secretTestNodeService) Create(context.Context, node.Config, bool) (node.Node, error) {
+	s.current, s.hasCurrent = s.created, true
 	return s.created, nil
 }
 func (s *secretTestNodeService) CreateBatch(context.Context, []node.Config, bool) ([]node.Node, error) {
+	s.current, s.hasCurrent = s.created, true
 	return []node.Node{s.created}, nil
 }
 func (s *secretTestNodeService) Update(context.Context, string, node.Config, bool) (node.Node, error) {
+	s.current, s.hasCurrent = s.updated, true
 	return s.updated, nil
 }
 func (s *secretTestNodeService) Start(context.Context, string) (node.Node, error) {
@@ -45,8 +52,13 @@ func (s *secretTestNodeService) MoveToFolder(context.Context, string, string) (n
 func (s *secretTestNodeService) RenameFolder(context.Context, string, string) ([]node.Node, error) {
 	return nil, nil
 }
-func (s *secretTestNodeService) Get(string) (node.Node, bool) { return s.existing, s.existingFound }
-func (s *secretTestNodeService) List() []node.Node            { return nil }
+func (s *secretTestNodeService) Get(string) (node.Node, bool) {
+	if s.hasCurrent {
+		return s.current, true
+	}
+	return s.existing, s.existingFound
+}
+func (s *secretTestNodeService) List() []node.Node { return nil }
 
 type secretTestRegistrar struct {
 	values       []string
@@ -187,4 +199,77 @@ func TestSecretRegisteringNodeServiceDeleteToleratesRegisterOnlyRegistrar(t *tes
 	if len(remover.removed) != 1 || remover.removed[0] != "node-2" {
 		t.Fatalf("removed stats nodes = %v", remover.removed)
 	}
+}
+
+// countingRegistrar tracks the per-secret reference count the way the eventlog
+// registry does, so tests can assert a full node lifecycle leaves no residue.
+type countingRegistrar struct {
+	counts map[string]int
+}
+
+func (r *countingRegistrar) RegisterSecret(value string) {
+	r.counts[value]++
+}
+
+func (r *countingRegistrar) UnregisterSecret(value string) {
+	r.counts[value]--
+}
+
+func assertSecretCountsDrained(t *testing.T, registrar *countingRegistrar) {
+	t.Helper()
+	for value, count := range registrar.counts {
+		if count != 0 {
+			t.Fatalf("secret %q reference count = %d after full lifecycle, want 0 (all counts: %v)", value, count, registrar.counts)
+		}
+	}
+}
+
+func TestSecretRegisteringNodeServiceUpdateReleasesRotatedCredentials(t *testing.T) {
+	delegate := &secretTestNodeService{
+		created: node.Node{Config: node.Config{Username: "user-a", Password: "pass-a"}},
+		updated: node.Node{Config: node.Config{Username: "user-b", Password: "pass-b"}},
+	}
+	registrar := &countingRegistrar{counts: map[string]int{}}
+	service, err := newSecretRegisteringNodeService(delegate, registrar, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := service.Create(context.Background(), node.Config{}, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Update(context.Background(), "node-1", node.Config{}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Delete(context.Background(), "node-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	assertSecretCountsDrained(t, registrar)
+}
+
+func TestSecretRegisteringNodeServiceUnchangedUpdateKeepsReferenceCountBalanced(t *testing.T) {
+	delegate := &secretTestNodeService{
+		created: node.Node{Config: node.Config{Username: "user-a", Password: "pass-a"}},
+		updated: node.Node{Config: node.Config{Username: "user-a", Password: "pass-a"}},
+	}
+	registrar := &countingRegistrar{counts: map[string]int{}}
+	service, err := newSecretRegisteringNodeService(delegate, registrar, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := service.Create(context.Background(), node.Config{}, false); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := service.Update(context.Background(), "node-1", node.Config{}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := service.Delete(context.Background(), "node-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	assertSecretCountsDrained(t, registrar)
 }

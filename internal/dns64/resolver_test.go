@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -419,6 +420,115 @@ func TestResolverUpdateEndpointsRejectsInvalidCandidateWithoutChangingState(t *t
 	}
 	if got := resolver.Endpoints(); len(got) != 1 || got[0] != before[0] {
 		t.Fatalf("invalid update changed endpoints: before=%#v after=%#v", before, got)
+	}
+}
+
+// blockingQueryer parks every Query call until release is closed so tests can
+// hold concurrent lookups open at the same cache key.
+type blockingQueryer struct {
+	mu      sync.Mutex
+	calls   int
+	entered chan struct{}
+	release chan struct{}
+	result  QueryResult
+	err     error
+}
+
+func (b *blockingQueryer) Query(_ context.Context, _ Endpoint, _ string, _ RecordType) (QueryResult, error) {
+	b.mu.Lock()
+	b.calls++
+	b.mu.Unlock()
+	b.entered <- struct{}{}
+	<-b.release
+	return b.result, b.err
+}
+
+func (b *blockingQueryer) callCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.calls
+}
+
+// resolveConcurrently fires n Resolve calls for the same name while the
+// queryer is blocked, then releases the query and waits for every caller.
+func resolveConcurrently(t *testing.T, resolver *Resolver, queryer *blockingQueryer, name string, n int) ([]Resolution, []error) {
+	t.Helper()
+	resolutions := make([]Resolution, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			resolutions[i], errs[i] = resolver.Resolve(
+				context.Background(), name,
+				policy.DestinationPolicy{}, policy.ULAInherit, netip.Prefix{},
+			)
+		}(i)
+	}
+	close(start)
+	<-queryer.entered
+	// Give every concurrent caller time to reach the lookup path while the
+	// upstream query is still in flight; without deduplication each of them
+	// enters Query and the counter climbs past one.
+	time.Sleep(250 * time.Millisecond)
+	close(queryer.release)
+	wg.Wait()
+	return resolutions, errs
+}
+
+func TestResolverCollapsesConcurrentLookupsForSameNameIntoSingleQuery(t *testing.T) {
+	address := netip.MustParseAddr("2606:4700:4700::1111")
+	queryer := &blockingQueryer{
+		entered: make(chan struct{}, 16),
+		release: make(chan struct{}),
+		result:  QueryResult{Addresses: []netip.Addr{address}, TTL: time.Minute},
+	}
+	resolver, err := NewResolver(testEndpoints()[:1], queryer, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolutions, errs := resolveConcurrently(t, resolver, queryer, "example.com", 8)
+
+	if calls := queryer.callCount(); calls != 1 {
+		t.Fatalf("concurrent lookups issued %d upstream queries, want 1", calls)
+	}
+	for i := range errs {
+		if errs[i] != nil {
+			t.Fatalf("Resolve %d error = %v", i, errs[i])
+		}
+		if len(resolutions[i].Addresses) != 1 || resolutions[i].Addresses[0] != address {
+			t.Fatalf("Resolve %d = %#v, want %s", i, resolutions[i], address)
+		}
+	}
+}
+
+func TestResolverSharesLookupFailureWithConcurrentWaiters(t *testing.T) {
+	queryer := &blockingQueryer{
+		entered: make(chan struct{}, 16),
+		release: make(chan struct{}),
+		err:     errors.New("upstream failure"),
+	}
+	resolver, err := NewResolver(testEndpoints()[:1], queryer, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, errs := resolveConcurrently(t, resolver, queryer, "example.com", 8)
+
+	if calls := queryer.callCount(); calls != 1 {
+		t.Fatalf("concurrent lookups issued %d upstream queries, want 1", calls)
+	}
+	for i := range errs {
+		if errs[i] == nil {
+			t.Fatalf("Resolve %d error = nil, want shared upstream failure", i)
+		}
+		if !strings.Contains(errs[i].Error(), "all DNS resolvers failed") {
+			t.Fatalf("Resolve %d error = %v, want aggregated failure", i, errs[i])
+		}
 	}
 }
 

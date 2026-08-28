@@ -56,8 +56,15 @@ func (s *secretRegisteringNodeService) CreateBatch(ctx context.Context, configs 
 }
 
 func (s *secretRegisteringNodeService) Update(ctx context.Context, id string, config node.Config, confirm bool) (node.Node, error) {
+	// Capture the credentials before the update; once it commits, the node no
+	// longer references them and the old registration must be released so the
+	// redaction table does not keep rotated credentials alive forever.
+	existing, found := s.delegate.Get(id)
 	updated, err := s.delegate.Update(ctx, id, config, confirm)
 	if err == nil || errors.Is(err, node.ErrPreviousRuntimeCleanup) {
+		if found {
+			s.unregister(existing)
+		}
 		s.register(updated)
 	}
 	return updated, err
