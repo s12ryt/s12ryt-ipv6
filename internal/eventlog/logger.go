@@ -43,16 +43,17 @@ type Filter struct {
 }
 
 type Logger struct {
-	mu       sync.Mutex
-	path     string
-	maxBytes int64
-	backups  int
-	stdout   io.Writer
-	now      func() time.Time
-	file     *os.File
-	size     int64
-	secrets  []string
-	closed   bool
+	mu           sync.Mutex
+	path         string
+	maxBytes     int64
+	backups      int
+	stdout       io.Writer
+	now          func() time.Time
+	file         *os.File
+	size         int64
+	secrets      []string
+	secretCounts map[string]int
+	closed       bool
 }
 
 func New(path string, maxBytes int64, backups int, stdout io.Writer, now func() time.Time) (*Logger, error) {
@@ -83,6 +84,7 @@ func New(path string, maxBytes int64, backups int, stdout io.Writer, now func() 
 	return &Logger{
 		path: path, maxBytes: maxBytes, backups: backups,
 		stdout: stdout, now: now, file: file, size: info.Size(),
+		secretCounts: make(map[string]int),
 	}, nil
 }
 
@@ -94,10 +96,39 @@ func (l *Logger) RegisterSecret(secret string) {
 	defer l.mu.Unlock()
 	for _, existing := range l.secrets {
 		if existing == secret {
+			l.secretCounts[secret]++
 			return
 		}
 	}
 	l.secrets = append(l.secrets, secret)
+	l.secretCounts[secret] = 1
+}
+
+// UnregisterSecret releases one RegisterSecret reference for the value. A
+// secret stops being redacted only when its last reference is released, so
+// distinct live nodes that share a credential keep their redaction intact.
+// Unknown or empty values are ignored.
+func (l *Logger) UnregisterSecret(secret string) {
+	if secret == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	count, known := l.secretCounts[secret]
+	if !known {
+		return
+	}
+	if count > 1 {
+		l.secretCounts[secret] = count - 1
+		return
+	}
+	delete(l.secretCounts, secret)
+	for index, existing := range l.secrets {
+		if existing == secret {
+			l.secrets = append(l.secrets[:index], l.secrets[index+1:]...)
+			return
+		}
+	}
 }
 
 func (l *Logger) Write(event Event) error {

@@ -368,3 +368,69 @@ func TestLoggerTailValidatesLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestLoggerUnregisterSecretKeepsRedactionUntilLastReference(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	logger, err := New(path, 1024*1024, 5, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+	// Two registrations model two live nodes sharing the same credential.
+	logger.RegisterSecret("shared-secret")
+	logger.RegisterSecret("shared-secret")
+
+	logger.UnregisterSecret("shared-secret")
+	if err := logger.Write(Event{Kind: KindAudit, Action: "first", Error: "auth shared-secret failed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	logger.UnregisterSecret("shared-secret")
+	if err := logger.Write(Event{Kind: KindAudit, Action: "second", Error: "auth shared-secret failed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(contents)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("log lines = %q", string(contents))
+	}
+	if strings.Contains(lines[0], "shared-secret") || !strings.Contains(lines[0], "[REDACTED]") {
+		t.Fatalf("first event lost redaction while a reference remained: %s", lines[0])
+	}
+	if !strings.Contains(lines[1], "shared-secret") {
+		t.Fatalf("last reference removed but event is still redacted: %s", lines[1])
+	}
+}
+
+func TestLoggerUnregisterUnknownOrEmptySecretIsNoop(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	logger, err := New(path, 1024*1024, 5, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+	logger.RegisterSecret("real-secret")
+
+	logger.UnregisterSecret("ghost-secret")
+	logger.UnregisterSecret("")
+
+	if err := logger.Write(Event{Kind: KindAudit, Action: "check", Error: "real-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(contents, []byte("real-secret")) {
+		t.Fatalf("no-op unregister broke redaction: %s", contents)
+	}
+}
