@@ -236,8 +236,8 @@ func TestHTTPServerMutationGuardRequiresSessionOriginJSONAndCSRF(t *testing.T) {
 	if got := makeRequest("http://manager.example:34466", "application/json", loginPayload.CSRFToken, true); got != http.StatusNoContent {
 		t.Fatalf("valid mutation status = %d, want 204", got)
 	}
-	if got := makeRequest("https://manager.example:34466", "application/json", loginPayload.CSRFToken, true); got != http.StatusForbidden {
-		t.Fatalf("cross-scheme origin status = %d, want 403", got)
+	if got := makeRequest("https://manager.example:34466", "application/json", loginPayload.CSRFToken, true); got != http.StatusNoContent {
+		t.Fatalf("https same-host origin status = %d, want 204", got)
 	}
 	if got := makeRequest("", "application/json", loginPayload.CSRFToken, true); got != http.StatusForbidden {
 		t.Fatalf("missing origin status = %d, want 403", got)
@@ -250,6 +250,60 @@ func TestHTTPServerMutationGuardRequiresSessionOriginJSONAndCSRF(t *testing.T) {
 	}
 	if got := makeRequest("http://manager.example:34466", "application/json", loginPayload.CSRFToken, false); got != http.StatusUnauthorized {
 		t.Fatalf("missing session status = %d, want 401", got)
+	}
+	// Both the http and https same-host origins (see above) reach the handler.
+	if called != 2 {
+		t.Fatalf("guarded handler calls = %d, want 2", called)
+	}
+}
+
+func TestHTTPServerMutationGuardAcceptsHTTPSSameHostOrigin(t *testing.T) {
+	authenticator := &fakePasswordAuthenticator{password: "correct-password-value"}
+	server := newTestHTTPServer(t, authenticator, 5, 500, func() HealthState { return HealthHealthy })
+	login := performLogin(t, server.Handler(), "192.0.2.1:1234", "manager.example:34466", authenticator.password)
+	cookie := login.Result().Cookies()[0]
+	var payload struct {
+		CSRFToken string `json:"csrf_token"`
+	}
+	if err := json.Unmarshal(login.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	called := 0
+	guarded := server.RequireMutation(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		called++
+		response.WriteHeader(http.StatusNoContent)
+	}))
+
+	makeRequest := func(origin string) int {
+		request := httptest.NewRequest(http.MethodPost, "http://manager.example:34466/api/mutate", strings.NewReader(`{}`))
+		request.Host = "manager.example:34466"
+		request.RemoteAddr = "192.0.2.1:1234"
+		request.Header.Set("Origin", origin)
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set(CSRFHeaderName, payload.CSRFToken)
+		request.AddCookie(cookie)
+		response := httptest.NewRecorder()
+		guarded.ServeHTTP(response, request)
+		return response.Code
+	}
+
+	// A TLS-terminating reverse proxy (the documented trusted-channel setup)
+	// presents an https Origin while the panel itself serves plain HTTP.
+	if got := makeRequest("https://manager.example:34466"); got != http.StatusNoContent {
+		t.Fatalf("https same-host origin status = %d, want 204", got)
+	}
+
+	rejected := []string{
+		"ftp://manager.example:34466",                 // scheme outside the allow list
+		"https://manager.example:34466.evil.example",  // host mismatch
+		"http://evil.example",                         // host mismatch
+		"null",                                        // unparseable / opaque origin
+		"",                                            // missing origin
+	}
+	for _, origin := range rejected {
+		if got := makeRequest(origin); got != http.StatusForbidden {
+			t.Fatalf("origin %q status = %d, want 403", origin, got)
+		}
 	}
 	if called != 1 {
 		t.Fatalf("guarded handler calls = %d, want 1", called)

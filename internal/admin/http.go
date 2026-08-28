@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -122,7 +123,7 @@ func (s *HTTPServer) RequireSession(next http.Handler) http.Handler {
 
 func (s *HTTPServer) RequireMutation(next http.Handler) http.Handler {
 	return s.RequireSession(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.Header.Get("Origin") != "http://"+request.Host {
+		if !sameHostOrigin(request) {
 			writeAPIError(response, http.StatusForbidden, "origin rejected")
 			return
 		}
@@ -137,6 +138,22 @@ func (s *HTTPServer) RequireMutation(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(response, request)
 	}))
+}
+
+// sameHostOrigin reports whether the request carries an Origin header whose
+// host matches the request host. Both http and https schemes are accepted so
+// deployments behind a trusted TLS-terminating reverse proxy keep working;
+// the scheme itself is not part of the CSRF boundary, because an attacker
+// page cannot forge the victim's request Host.
+func sameHostOrigin(request *http.Request) bool {
+	origin, err := url.Parse(request.Header.Get("Origin"))
+	if err != nil || origin.Host == "" {
+		return false
+	}
+	if origin.Scheme != "http" && origin.Scheme != "https" {
+		return false
+	}
+	return origin.Host == request.Host
 }
 
 func (s *HTTPServer) handleLogin(response http.ResponseWriter, request *http.Request) {
