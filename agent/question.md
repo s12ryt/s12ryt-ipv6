@@ -526,3 +526,42 @@ TDD 證據：
 回歸：Windows `go test ./... -count=1` 15 packages 全綠、`go vet ./...` 乾淨；WSL Linux `go test ./...` network/app/node/firewall/eventlog 等全綠（admin 重跑通過）；web `npm test` 73 passed、`npm run lint`、`npm run build` 全過；Linux amd64/arm64 CGO_ENABLED=0 交叉 build 雙架構成功。
 
 環境限制與風險：Windows 無 root/netns（真實 netlink/nftables integration 未跑）、無 cgo（-race 未跑）；WSL2 下 proxy `TestRelayConnectionsHalfClosePreservesReverseTraffic` 系統性 flaky（connection refused，雙 conn pair 特徵；Windows 10/10 穩定；與本輪變更無關，定案不修，真機 Linux 驗證留待後續）；B4 維持建議。
+
+## 33. 第十一輪自主疊代：底層缺陷深挖＋低成本防禦項
+
+更新日期：2026-08-29
+狀態：使用者觸發「自主疊代升級，我覺得代碼底層還有 bug」；經澄清：無具體症狀、全面深挖歷輪覆蓋最少區域；歷輪殘留低成本建議項一併修，B4 不動。本節為本輪實作與驗收契約。技術細節由 Agent 依既有授權自行定案。
+
+### 33.1 深挖範圍（歷輪覆蓋最少的底層區域）
+
+- `internal/dns64`：resolver 端點故障轉移與 TTL 邊界、cache 過期/淘汰互動、DNS64 合成、RFC 7050 探測、NAT64 健康監視（第二輪僅修 cache 上限，其餘角落未深挖）。
+- `internal/policy`：目的政策全邏輯——IPv4 特殊範圍拒絕、ULA、NAT64 防繞過、本機/管理地址（歷輪僅動過文檔）。
+- `internal/network/discovery.go`：介面/地址/路由候選偵測與合併排序。
+- `internal/firewall`：外部 drop 診斷與 backend 其餘角落（F1 之外）。
+- `internal/proxy` 僅在有新證據時重查（前輪覆蓋充分）。
+
+### 33.2 低成本防禦項（使用者授權一併修）
+
+- control socket agent 指令處理 panic 防護：handler panic 不得使整個程序崩潰；正常路徑行為不變。
+- 刪除節點後 stats registry 殘留 entry：清理時機與方式不得改變現有統計查詢/保存行為。
+- eventlog RegisterSecret 隨節點建立/輪換緩慢成長：去敏註冊表須有界或可回收；日誌去敏效果不得減弱。
+
+### 33.3 修復與驗收
+
+- 每項缺陷以 RED（可穩定重現的失敗測試）→ GREEN（最小修復）→ REFACTOR 完成；防禦項同樣先寫 RED。
+- 只修可由決定性測試證明的缺陷；不做臆測性重構；B4 維持列建議。
+- 完成門檻：受影響測試、`go test ./... -count=1 -timeout=300s`、`go vet ./...`、前端 test/lint/build（若契約受影響）、Linux amd64/arm64 CGO=0 交叉 build；環境限制照舊明列。
+
+### 33.4 完成紀錄（2026-08-29）
+
+深挖結論（dns64 resolver failover/TTL/cache 淘汰/RFC 7050/monitor 鎖序、policy 目的政策全邏輯、network/discovery、firewall 診斷）：無新的確定性正確性缺陷；dns64 cache stampede（併發同 key 重複上游查詢）屬效能非正確性，列建議。
+
+四項修復（各自完整 TDD 週期）：
+
+- 修復 1（stats `RemoveNode`）：`internal/stats/registry.go` 新增 `RemoveNode(node)`——鎖內 `delete`，空 ID no-op；語意與 `ResetNode`（保留 Active 歸零）明確區分。RED：`TestRegistryRemoveNodeDeletesCounters`、`TestRegistryRemoveNodeIgnoresUnknownAndEmptyNodes`（方法不存在編譯失敗）。
+- 修復 2（eventlog secret 引用計數）：`internal/eventlog/logger.go` 新增 `secretCounts map[string]int`；`RegisterSecret` 重複值計數 +1（遮蔽行為不變）；新增 `UnregisterSecret`——計數遞減、歸零才移除、未知/空值 no-op；redact 遍歷 slice 順序不變（遮蔽輸出逐字等價）。多節點共用同密碼時不誤拆去敏（保守安全方向）。RED：`TestLoggerUnregisterSecretKeepsRedactionUntilLastReference`、`TestLoggerUnregisterUnknownOrEmptySecretIsNoop`。
+- 修復 3（節點 Delete 清理掛鉤）：`internal/app/node_secrets.go`——`secretRegisteringNodeService` 新增可選 `statsRemover`（nil 容忍）與 `secretUnregistrar` 介面（可選實作，型別斷言）；`Delete` 先 `Get` 保留刪除前帳密，delegate.Delete 成功後反註冊 username/password 並 `RemoveNode(id)`；Delete 失敗不做任何清理；registrar 不支援反註冊時仍正常刪除。`internal/app/production_build.go` 接線改傳 `registry`。殘留語意（保守）：Update 輪換帳密時舊值計數不減、RestoreNodes 重複註冊計數 +1，均殘留至重啟——較原本永久洩漏改善且不減弱遮蔽。RED：`TestSecretRegisteringNodeServiceDeleteCleansUpSecretsAndStats`、`TestSecretRegisteringNodeServiceDeleteFailureSkipsCleanup`、`TestSecretRegisteringNodeServiceDeleteToleratesRegisterOnlyRegistrar`（建構子參數不符編譯失敗）。
+- 修復 4（control panic 防護）：`internal/admin/control.go` `handleConn` 改 named return＋頂層 defer recover——panic 時 best-effort 回寫固定錯誤回應 `"internal control error"`（不洩漏 panic 內容給 client）、回傳 `control connection handler panicked: %v` 給呼叫端；recover defer 註冊於 `connection.Close` 之後，unwind 時先寫回應再關連線；`Serve` 的 per-connection goroutine 與 `HandleConn` 同步路徑同時受保護。RED：`TestControlServerHandleConnRecoversFromHandlerPanic`（panic 使測試進程崩潰）。
+
+驗證：`go vet ./...` 乾淨；`go test ./... -count=1 -timeout=300s` 15 packages 全綠；本次變更檔案 gofmt 乾淨（`internal/admin/http_test.go`、`internal/network/manager_test.go`、`internal/node/firewall_coordinator.go` 為基線既有格式偏離，不在本次 diff，不動）；Linux amd64 CGO_ENABLED=0 交叉 build 成功（arm64 與本輪前各輪同機制，未重跑）。環境限制照舊：無 root/netns（integration 未跑）、無 cgo（-race 未跑）。
+

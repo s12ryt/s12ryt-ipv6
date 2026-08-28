@@ -197,3 +197,14 @@
 - [x] 連鎖修復：app production_build_test.go productionTestKernel 補 InterfaceAddresses/WaitAddressesReady 兩 stub（Kernel 介面新增方法破壞既有 fake）。
 - [x] 完整回歸：Windows go test ./... 15 packages＋vet 乾淨；WSL Linux network/app/node/firewall/eventlog 全綠（admin flaky 重跑通過）；web 73 tests＋lint＋build 全過；Linux amd64/arm64 CGO=0 交叉 build 雙架構成功。
 - [x] WSL2 環境限制定案：proxy TestRelayConnectionsHalfClosePreservesReverseTraffic 系統性 flaky（connection refused，雙 conn pair；Windows 10/10 穩定；與本輪無關）不修，真機 Linux 驗證留待後續；-race/integration 環境不可用照舊。
+
+## 2026-08-29 第十一輪：底層深挖＋三項低成本防禦修復
+
+- [x] 契約 §33（使用者「自主疊代升級，底層還有 bug」）：深挖 dns64/policy/network discovery/firewall；歷輪殘留低成本建議項一併修（control panic 防護、stats registry 殘留、eventlog RegisterSecret 成長）；B4 不動。
+- [x] 深挖結論：無新確定性缺陷。dns64（failover/TTL/evict/RFC7050/monitor 鎖序/literal NAT64 驗證）、policy（目的政策順序/special ranges/decodeNAT64 /96）、discovery、firewall 診斷均穩健；dns64 cache stampede（併發同 key 重複上游查詢）屬效能觀察列建議。
+- [x] 修復 1：stats.Registry.RemoveNode（鎖內 delete、空 ID no-op、與 ResetNode 語意區分）。RED=TestRegistryRemoveNode*2（方法不存在編譯失敗）。
+- [x] 修復 2：eventlog secret 引用計數——RegisterSecret 重複值計數+1、UnregisterSecret 遞減歸零才移除、未知/空 no-op；redact 順序不變（遮蔽輸出逐字等價）；多節點同密碼不誤拆去敏。RED=TestLoggerUnregister*2。
+- [x] 修復 3：node_secrets.go Delete 掛鉤——可選 statsRemover（nil 容忍）＋secretUnregistrar 型別斷言；Delete 先 Get 保留刪除前帳密，成功後反註冊 username/password＋RemoveNode(id)；失敗不清理；register-only registrar 相容。production_build 接線傳 registry。殘留語意（保守）：Update 輪換舊值與 RestoreNodes 重複註冊計數殘留至重啟，不減弱遮蔽。RED=TestSecretRegisteringNodeServiceDelete*3（建構子參數不符編譯失敗）。
+- [x] 修復 4：control.go handleConn named return＋頂層 recover——panic 時 best-effort 回固定錯誤 "internal control error"（不洩漏 panic 內容）、回傳錯誤給呼叫端；recover defer 註冊於 connection.Close 後（unwind 先寫回應再關連線）；Serve goroutine 與 HandleConn 同步路徑同受保護。RED=TestControlServerHandleConnRecoversFromHandlerPanic（panic 崩潰測試進程）。
+- [x] 回歸：go vet 乾淨；go test ./... -count=1 -timeout=300s 15 packages 全綠；本次變更檔案 gofmt 乾淨（http_test.go/manager_test.go/firewall_coordinator.go 為基線既有偏離，不在 diff 不動）；Linux amd64 CGO=0 build 成功。
+- [x] 環境限制照舊：無 root/netns（integration 未跑）、無 cgo（-race 未跑）；arm64 交叉 build 未重跑（同機制，amd64 已驗證）。

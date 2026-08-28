@@ -215,3 +215,10 @@
 - 驗證：RED=WSL go test ./internal/network 編譯失敗（方法 undefined×5）；GREEN 迭代 3 次（nil map panic→fake 推導→計數與 Reconcile 兩階段斷言 2）後雙平台 network ok；量測 Apply 3 地址 AddressExists 3→0/WaitAddressReady 3→0/InterfaceAddresses 1/WaitAddressesReady 1；回歸=Windows 15 packages+vet、WSL network/app/node/firewall/eventlog、web 73 tests/lint/build、Linux amd64/arm64 CGO=0 build 全過。
 - 環境限制：無 root/netns（integration 未跑）、無 -race；WSL2 proxy TestRelayConnectionsHalfClosePreservesReverseTraffic 系統性 flaky（connection refused、雙 conn pair、Windows 穩定）定案環境限制不修。
 - 提交：fix(network) 批次查詢重構＋docs(agent) 治理檔，推送 origin/main。
+
+## 2026-08-29 第十一輪操作記錄（自主疊代：深挖＋三項防禦修復）
+- 讀取：internal/dns64/resolver.go、monitor.go、discovery.go、dot.go；internal/policy/destination.go；internal/stats/registry.go（＋registry_test.go）；internal/eventlog/logger.go 全文（＋logger_test.go 開頭/尾部）；internal/app/node_secrets.go（＋node_secrets_test.go）、traffic_observer.go、production_build.go L340-460；internal/admin/control.go（＋control_test.go helper 段）；internal/node/manager.go Config 定義、runtime.go nodeID 來源；agent/question.md §32-33。
+- 修改：internal/stats/registry.go（RemoveNode）＋registry_test.go（2 測試）；internal/eventlog/logger.go（secretCounts map、RegisterSecret 計數、UnregisterSecret）＋logger_test.go（2 測試）；internal/app/node_secrets.go（secretUnregistrar/nodeStatsRemover 介面、建構子第三參數、Delete 清理、unregister）＋node_secrets_test.go（fake 擴充＋3 測試）＋production_build.go（接線傳 registry）；internal/admin/control.go（handleConn recover）＋control_test.go（panicking handler＋1 測試）；agent/question.md（§33.4）、agent/deep_todos.md、agent/memory.md。
+- 驗證：四項各自 RED（方法/建構子 undefined 編譯失敗×3、panic 崩潰×1）→ GREEN；go vet 乾淨；go test ./... -count=1 -timeout=300s 15 packages 全綠；本次變更檔案 gofmt 乾淨（3 個基線既有格式偏離檔案不在 diff 不動）；Linux amd64 CGO=0 交叉 build 成功。
+- 環境限制：無 root/netns（integration 未跑）、無 cgo（-race 未跑）；arm64 build 未重跑（同機制）。
+- 提交：fix(app,admin,stats,eventlog) 防禦修復＋docs(agent) 治理檔，推送 origin/main。
