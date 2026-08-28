@@ -455,3 +455,38 @@
 - 修復 4（proxy `SourcePool.Replace`，使用者回報）：任何資源事務與每條 draining 地址連線結束都觸發 runtime.Sync → OutboundRegistry.Sync 對既有池呼叫 `Replace(pool.Active)` → 原實作無條件 `p.next = 0` 重置 round-robin，出站選址只在池內前兩個地址間來回；修復為新地址集合與 current 完全相同（`slices.Equal`）時直接 return nil，不重置 cursor、不動 draining。真 refresh（集合變化）仍重置。過程中曾引入重複 `p.mu.Lock()` 自我死鎖，由既有 dialer 測試（changed 路徑）捕獲後修正——回歸保護網生效。RED：`TestSourcePoolReplaceWithSameAddressesKeepsRoundRobinPosition`。
 - 驗證：`go test ./... -count=1 -timeout=300s` 15 packages 全綠；`go vet ./...` 乾淨；前端 `npm test`（73 測試）、`npm run lint`、`npm run build` 全綠；Linux amd64/arm64 CGO-disabled 交叉 build 成功。
 - 未修風險：eventlog `Tail` 與 rotation/Clear 併發時為近似快照（可能重複／遺漏少量事件）；Windows 上併發 Clear 可能因 fd 共享語意失敗（production 為 Linux，可接受）。
+
+## 31. 第九輪自主疊代：底層缺陷深挖
+
+更新日期：2026-08-28
+狀態：使用者再次觸發「自主疊代升級」並指出「代碼底層還有 bug」；本節為本輪實作與驗收契約。技術細節由 Agent 依既有授權自行定案。
+
+### 31.1 範圍與優先順序
+
+- 最高優先：正確性缺陷（panic、死鎖/競態、goroutine/FD/記憶體洩漏、錯誤吞沒、交易回滾缺漏、原子持久化破壞、邊界值、協定偏差、安全邊界），集中在歷輪穩定性掃描覆蓋最少的區域：
+  - `internal/admin` agent_service.go（apply/prune/export round-trip 宣告式邏輯、批次建立、逐項事務邊界）。
+  - `internal/node` PersistentManager／批次建立／資料夾操作的交易與回滾。
+  - `internal/app` service.go 生命週期／停止順序／connectivity 與 host address watcher。
+  - `internal/proxy` 源租借、dialer 與 relay 邊角（前輪已掃，僅在有新證據時重查）。
+  - `web/src` 前端 api.ts、SSE 訂閱、狀態管理（輕掃，僅處理契約級缺陷）。
+- 次優先：若未發現新的正確性缺陷，評估既有結構性瓶頸 B2（linuxKernel.AddressExists O(C²)）／B3（waitForDAD 平行全量 dump）是否本輪以 Kernel 介面批次查詢重構處理；處理時必須以決定性測試證明行為等價（錯誤語意、回滾順序不變）。
+- 不重掃前八輪已證實安全的區域，除非有衝突新證據。
+
+### 31.2 修復與驗收
+
+- 每項修復維持 RED → GREEN → REFACTOR；只修可由決定性測試或可執行證據證明的缺陷。
+- B4（coordinator 單鎖涵蓋整個網路事務）除非證明造成可觀察正確性問題，否則維持列建議。
+- 維持 §29.3 的相容性、錯誤語意與安全邊界要求；apply/prune/export 對既有文件的行為不得無聲變更。
+- 完成門檻同 §29.4：受影響測試、`go test ./... -count=1 -timeout=300s`、`go vet ./...`、前端 test/lint/build（若 embed 或契約受影響），以及 Linux amd64/arm64 CGO-disabled 交叉 build；Linux root/netns 或 race 不可執行時明列替代證據與剩餘風險。
+
+### 31.3 完成紀錄（2026-08-28）
+
+掃描範圍與結論（均無新的正確性缺陷）：
+
+- `internal/admin`：agent_document.go（mergeAgentSettings 欄位級合併＋Validate 正確；export preserve/set 語意正確；Resolvers clone 防禦到位）、operations_service.go（SetManualNAT64/UpdateResolvers 失敗回滾完整 errors.Join；Overview cancel 無洩漏；ResetStatistics 失敗返回錯誤不吞沒）。agent.go 的 apply 逐項事務屬前輪已深挖範圍，不重掃。
+- `internal/node`：manager.go 全檔＋runtime.go RefreshBindings/drain 回呼鏈＋persistent.go 透傳＋drain_tracker/drain_queue 鎖序。針對「RefreshInboundBindings 持 m.mu 下同步觸發 onDrained 是否死鎖」逐幀驗證：callback 僅入 DrainTracker（鎖序單向 m.mu → DrainTracker.mu → DrainQueue.mu，不回叫 Manager）；DrainQueue.Run 取 batch 鎖外才呼叫資源鎖 CompleteDrainedAddresses；runtime.go drainedCallbackLocked 於鎖內原子「檢查＋刪除」retiring，防雙重觸發與過早排空。無死鎖、無缺陷。
+- `internal/app`：service.go（results channel cap=3 恰等元件數；二次 closeListeners 冪等；cleanup 順序正確；InitializeRuntime 失敗僅 ShutdownFirewall 合理——nftables table 尚未建立）、connectivity.go、host_addresses.go、production_build.go（build 失敗不殘留 nftables；logger 雙關閉依賴 eventlog.Close 冪等；RestoreNodes 無條件 MarkRestored＋全節點 RegisterSecret 防洩漏；RunNAT64 裸 goroutine 隨 ctx 結束且與 cleanup 競態無害；prepareControlSocket 拒刪非 socket 檔；close once 單次）、startup_nodes.go（Restore 前 desired fallback 設計合理）、periodic_refresh.go、node_secrets.go（ErrPreviousRuntimeCleanup 特例仍註冊正確）——無缺陷。
+- `web` 前端輕掃：EventSource 僅 api.ts:221（round8 已深掃冪等）；無 setInterval；NodesView copyTimer clearTimeout 保護完整；73 個前端測試基線全綠——無新缺陷。
+- B2/B3 決策：本輪不實作。屬效能結構重構非正確性缺陷，需改 network.Kernel 介面＋linuxKernel＋waitForDAD＋fake kernel 測試全鏈；批次查詢行為等價的決定性驗證需 Linux netlink/netns 環境（Windows 無 root/netns，integration 無法執行）。留待下輪專項處理。
+
+結果：本輪深掃未發現新的正確性缺陷；無程式碼修改；基線 `go test ./... -count=1`（15 packages）與 `go vet ./...` 全綠即為驗證。殘餘風險同前輪：B2/B3/B4 列建議；Linux integration 與 -race 未於本機執行（環境限制）。

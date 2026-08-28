@@ -200,3 +200,11 @@
 - 修復 3 RED：`TestControlServerServesSecondConnectionWhileFirstIsBusy` 失敗「second control connection was blocked by the first connection's handler」。GREEN：`internal/admin/control.go` Serve accept loop 改 `go s.handleConn(ctx, connection)`；ControlServer 全套過。
 - 驗證：`go test ./... -count=1 -timeout=300s` 15 packages 全綠；`go vet ./...` 乾淨；web `npm test` 73 tests、`npm run lint`、`npm run build` 全過；Linux amd64/arm64 CGO=0 交叉 build 成功。
 - 未完整驗證：同前輪（無 root/netns、無 -race、無 gopls）。
+
+## 2026-08-28 第九輪操作記錄（自主疊代：底層缺陷深挖，無程式碼修改）
+
+- 讀取：internal/admin/agent_document.go、operations_service.go；internal/node/manager.go（810 行）、runtime.go（RefreshBindings L315-428/drainedCallbackLocked L464-476/ForceDrainBindings/bindEndpoints）、drain_tracker.go、drain_queue.go；internal/app/service.go、connectivity.go、host_addresses.go、production_build.go（601 行）、startup_nodes.go、periodic_refresh.go、node_secrets.go；internal/node/resource_runtime.go（RuntimeResourceSynchronizer.Sync）；web/src grep EventSource/timer 模式；agent/question.md（§30/§31）、agent/deep_todos.md、agent/memory.md。
+- 修改：僅治理檔——agent/question.md（§31 契約＋§31.3 完成紀錄）、agent/deep_todos.md（第九輪）、agent/memory.md（本節）；無程式碼、測試或 schema 變更。
+- 死鎖線索驗證（定案無缺陷）：RefreshInboundBindings（manager.go:689-740）持 m.mu 全程呼叫 runtime.RefreshBindings；removed endpoints 於 runtime.go:398-401 登記 retiring 後鎖外觸發 callback；下游 DrainTracker.InboundDrained→mark→DrainQueue.Enqueue 為單向鎖序且不回叫 Manager；DrainQueue.Run 獨立 goroutine 於 q.mu 外呼叫 CompleteDrainedAddresses；drainedCallbackLocked 鎖內原子「檢查＋刪除」防雙重觸發。
+- 驗證：`go test ./... -count=1` 15 packages 全綠、`go vet ./...` 乾淨（基線＝本輪唯一驗證，因無程式碼修改）。web 輕掃以 grep＋既有 73 測試基線為準，未重跑 lint/build（無 embed 影響）。
+- 未完整驗證：同前輪（無 root/netns、無 -race、無 gopls）；B2/B3 批次化重構本輪定案不實作，等價驗證需 Linux netlink/netns 環境。

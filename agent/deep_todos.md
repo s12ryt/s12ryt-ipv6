@@ -176,3 +176,14 @@
 - [x] 修復 admin control `Serve` accept loop 同步 handleConn，長 agent apply（10 分鐘）阻塞後續 control 連線（安裝器 120s 健康檢查誤判回滾）：改為 goroutine-per-connection，ctx 取消仍中止每條連線。RED `TestControlServerServesSecondConnectionWhileFirstIsBusy`。
 - [x] 完整驗證：`go test ./... -count=1 -timeout=300s` 15 packages、`go vet ./...`、web 73 tests、lint、build、Linux amd64/arm64 CGO=0 build 全通過。
 - [x] 環境限制同第七輪：無 root/netns（integration 未跑）、無 cgo/gcc（-race 未跑）、無 gopls。
+
+## 2026-08-28 第九輪：底層缺陷深挖（歷輪覆蓋最少區域）
+
+- [x] 契約 §31 寫入 `agent/question.md`：優先正確性缺陷，集中在 admin agent_document/operations_service → node manager/runtime → app 生命週期 → web 輕掃；B2/B3 需決定性等價測試才可本輪處理。
+- [x] 基線全綠：`go test ./... -count=1` 15 packages、`go vet ./...` 乾淨。
+- [x] 深挖 `internal/admin`：agent_document.go（欄位級合併/Validate/export preserve 正確）、operations_service.go（回滾 errors.Join 完整、Overview cancel 無洩漏）——無缺陷。agent.go apply 事務屬前輪已深挖，不重掃。
+- [x] 深挖 `internal/node`：manager.go 全檔＋runtime.go RefreshBindings/drain 回呼鏈＋drain_tracker/drain_queue 鎖序。重點線索「RefreshInboundBindings 持 m.mu 下同步觸發 onDrained 是否死鎖」定案：callback 僅入 DrainTracker（鎖序單向 m.mu → DrainTracker.mu → DrainQueue.mu，不回叫 Manager）；DrainQueue.Run 鎖外才取資源鎖；drainedCallbackLocked 鎖內原子檢查＋刪除 retiring，防雙重觸發與過早排空——無死鎖、無缺陷。
+- [x] 深挖 `internal/app`：service.go（results cap=3、closeListeners 冪等、cleanup 順序、InitializeRuntime 失敗僅 ShutdownFirewall 合理）、connectivity.go、host_addresses.go、production_build.go（601 行：nftables 無殘留路徑、logger 雙關閉冪等、RestoreNodes 全節點 RegisterSecret 防洩漏、RunNAT64 裸 goroutine 隨 ctx、prepareControlSocket 拒非 socket、close once）、startup_nodes.go、periodic_refresh.go、node_secrets.go——無缺陷。
+- [x] 深挖 `web` 輕掃：EventSource 僅 api.ts:221（round8 已深掃）、無 setInterval、copyTimer clearTimeout 保護完整；73 前端測試基線全綠——無新缺陷。
+- [x] B2/B3 決策：本輪不實作（效能重構非正確性；需改 Kernel 介面＋linuxKernel＋waitForDAD＋fake kernel 全鏈；等價驗證需 Linux netlink/netns 環境，Windows 無法執行 integration）。留待下輪專項。
+- [x] 本輪結論：未發現新的正確性缺陷；無程式碼修改，基線（go test 15 packages＋vet）即為驗證；治理檔更新後提交 docs(agent)。
