@@ -110,13 +110,24 @@ func (l *Logger) Tail(filter Filter, limit int) ([]Event, error) {
 	if limit < 1 || limit > 1000 {
 		return nil, errors.New("log tail limit must be between 1 and 1000")
 	}
+	// Open every segment file under a short lock, then release the mutex
+	// before decoding so concurrent Write calls are not blocked for the
+	// duration of the scan. Rotated segments are immutable; the current
+	// segment is read up to the size snapshot taken under the lock, so a
+	// concurrent append can only be partially visible. If the log rotates or
+	// is cleared while decoding, the result is a consistent-enough snapshot
+	// per file descriptor (old segment content stays readable), though a few
+	// events may be repeated or missing across the rotation boundary.
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.closed {
+		l.mu.Unlock()
 		return nil, errors.New("logger is closed")
 	}
-
-	result := make([]Event, 0, limit)
+	type segment struct {
+		file *os.File
+		size int64
+	}
+	segments := make([]segment, 0, l.backups+1)
 	for i := l.backups; i >= 0; i-- {
 		path := l.path
 		if i > 0 {
@@ -127,17 +138,40 @@ func (l *Logger) Tail(filter Filter, limit int) ([]Event, error) {
 			continue
 		}
 		if err != nil {
+			l.mu.Unlock()
+			for _, opened := range segments {
+				opened.file.Close()
+			}
 			return nil, fmt.Errorf("open log segment: %w", err)
 		}
-		decoder := json.NewDecoder(file)
+		if i == 0 {
+			segments = append(segments, segment{file: file, size: l.size})
+		} else {
+			segments = append(segments, segment{file: file})
+		}
+	}
+	l.mu.Unlock()
+
+	defer func() {
+		for _, opened := range segments {
+			opened.file.Close()
+		}
+	}()
+
+	result := make([]Event, 0, limit)
+	for _, seg := range segments {
+		var reader io.Reader = seg.file
+		if seg.size > 0 {
+			reader = io.LimitReader(seg.file, seg.size)
+		}
+		decoder := json.NewDecoder(reader)
 		for {
 			var event Event
-			err = decoder.Decode(&event)
+			err := decoder.Decode(&event)
 			if errors.Is(err, io.EOF) {
 				break
 			}
 			if err != nil {
-				file.Close()
 				return nil, fmt.Errorf("decode log segment: %w", err)
 			}
 			if !filter.matches(event) {
@@ -149,9 +183,6 @@ func (l *Logger) Tail(filter Filter, limit int) ([]Event, error) {
 			} else {
 				result = append(result, event)
 			}
-		}
-		if err := file.Close(); err != nil {
-			return nil, fmt.Errorf("close log segment: %w", err)
 		}
 	}
 	return result, nil

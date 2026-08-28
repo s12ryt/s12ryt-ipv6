@@ -283,6 +283,79 @@ func TestLoggerTailReadsRotationsInOrderAndFilters(t *testing.T) {
 	}
 }
 
+func TestLoggerTailDoesNotBlockConcurrentWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	line, err := json.Marshal(Event{
+		Time: time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC),
+		Kind: KindProxy, Action: "connect", Node: "bulk", Success: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	line = append(line, '\n')
+	if err := writeBulkLogLines(path, line, 300000); err != nil {
+		t.Fatal(err)
+	}
+
+	logger, err := New(path, 64*1024*1024, 0, nil, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	var tailEvents []Event
+	tailDone := make(chan error, 1)
+	go func() {
+		events, tailErr := logger.Tail(Filter{Kind: KindProxy}, 1000)
+		tailEvents = events
+		tailDone <- tailErr
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-tailDone:
+		t.Fatal("tail finished before the concurrent write attempt; enlarge the bulk log so the test stays meaningful")
+	default:
+	}
+
+	writeStart := time.Now()
+	if err := logger.Write(Event{Kind: KindProxy, Action: "concurrent-write", Success: true}); err != nil {
+		t.Fatal(err)
+	}
+	if writeElapsed := time.Since(writeStart); writeElapsed >= 100*time.Millisecond {
+		t.Fatalf("Write blocked for %v while Tail was decoding; Tail must not hold the logger mutex during decoding", writeElapsed)
+	}
+
+	if err := <-tailDone; err != nil {
+		t.Fatalf("Tail error = %v", err)
+	}
+	if len(tailEvents) != 1000 {
+		t.Fatalf("Tail returned %d events, want 1000", len(tailEvents))
+	}
+	found, err := logger.Tail(Filter{Action: "concurrent-write"}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].Action != "concurrent-write" {
+		t.Fatalf("Tail after concurrent write = %#v, want exactly the new event", found)
+	}
+}
+
+func writeBulkLogLines(path string, line []byte, count int) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	writer := bufio.NewWriterSize(file, 1024*1024)
+	for i := 0; i < count; i++ {
+		if _, err := writer.Write(line); err != nil {
+			return err
+		}
+	}
+	return writer.Flush()
+}
+
 func TestLoggerTailValidatesLimit(t *testing.T) {
 	logger, err := New(filepath.Join(t.TempDir(), "events.jsonl"), 1024, 1, nil, time.Now)
 	if err != nil {
