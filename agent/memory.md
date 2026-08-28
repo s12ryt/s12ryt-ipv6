@@ -208,3 +208,10 @@
 - 死鎖線索驗證（定案無缺陷）：RefreshInboundBindings（manager.go:689-740）持 m.mu 全程呼叫 runtime.RefreshBindings；removed endpoints 於 runtime.go:398-401 登記 retiring 後鎖外觸發 callback；下游 DrainTracker.InboundDrained→mark→DrainQueue.Enqueue 為單向鎖序且不回叫 Manager；DrainQueue.Run 獨立 goroutine 於 q.mu 外呼叫 CompleteDrainedAddresses；drainedCallbackLocked 鎖內原子「檢查＋刪除」防雙重觸發。
 - 驗證：`go test ./... -count=1` 15 packages 全綠、`go vet ./...` 乾淨（基線＝本輪唯一驗證，因無程式碼修改）。web 輕掃以 grep＋既有 73 測試基線為準，未重跑 lint/build（無 embed 影響）。
 - 未完整驗證：同前輪（無 root/netns、無 -race、無 gopls）；B2/B3 批次化重構本輪定案不實作，等價驗證需 Linux netlink/netns 環境。
+
+## 2026-08-28 第十輪操作記錄（B2/B3 批次查詢重構）
+- 讀取：internal/network/manager.go（488 行全文）、kernel_linux.go（250 行全文）、manager_test.go（fakeKernel/memoryOwnershipStore/17 測試）、kernel_linux_test.go（fakeNetlinkDriver/fakeBindValidator）、app/production_build_test.go（productionTestKernel）、agent/question.md §32。
+- 修改：internal/network/manager.go（Kernel 介面+InterfaceAddresses/WaitAddressesReady、interfaceAddressSets helper、removeStale/releaseAddresses/applyAddresses 批次化、waitForDAD 委派）；internal/network/kernel_linux.go（import slices、InterfaceAddresses、WaitAddressesReady 單一 ticker 聚合）；internal/network/manager_test.go（fakeKernel 擴充：existsCalls/interfaceAddrs/interfaceAddrErr/waitBatchErr/計數欄位與 callCounts/batchWaitRefs helpers、InterfaceAddresses 從 addresses map 推導、兩新測試）；internal/network/kernel_linux_test.go（fake driver addrListCalls/addrListErr、4 新測試）；internal/app/production_build_test.go（productionTestKernel 補 2 stub）；agent/question.md（§32+§32.3）、agent/deep_todos.md、agent/memory.md。
+- 驗證：RED=WSL go test ./internal/network 編譯失敗（方法 undefined×5）；GREEN 迭代 3 次（nil map panic→fake 推導→計數與 Reconcile 兩階段斷言 2）後雙平台 network ok；量測 Apply 3 地址 AddressExists 3→0/WaitAddressReady 3→0/InterfaceAddresses 1/WaitAddressesReady 1；回歸=Windows 15 packages+vet、WSL network/app/node/firewall/eventlog、web 73 tests/lint/build、Linux amd64/arm64 CGO=0 build 全過。
+- 環境限制：無 root/netns（integration 未跑）、無 -race；WSL2 proxy TestRelayConnectionsHalfClosePreservesReverseTraffic 系統性 flaky（connection refused、雙 conn pair、Windows 穩定）定案環境限制不修。
+- 提交：fix(network) 批次查詢重構＋docs(agent) 治理檔，推送 origin/main。

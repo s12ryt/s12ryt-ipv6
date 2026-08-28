@@ -490,3 +490,39 @@
 - B2/B3 決策：本輪不實作。屬效能結構重構非正確性缺陷，需改 network.Kernel 介面＋linuxKernel＋waitForDAD＋fake kernel 測試全鏈；批次查詢行為等價的決定性驗證需 Linux netlink/netns 環境（Windows 無 root/netns，integration 無法執行）。留待下輪專項處理。
 
 結果：本輪深掃未發現新的正確性缺陷；無程式碼修改；基線 `go test ./... -count=1`（15 packages）與 `go vet ./...` 全綠即為驗證。殘餘風險同前輪：B2/B3/B4 列建議；Linux integration 與 -race 未於本機執行（環境限制）。
+
+## 32. 第十輪：B2/B3 批次查詢重構（使用者授權「開修吧」）
+
+更新日期：2026-08-28
+狀態：使用者於收到 B2/B3 平實解釋後明確授權修復；本節為本輪實作與驗收契約。技術細節由 Agent 依既有授權自行定案。
+
+### 32.1 範圍與目標
+
+- B2：`internal/network` linuxKernel.AddressExists 對每個地址各做 LinkByName＋全量 AddrList dump 再比對，C 個地址的批次操作總成本 O(C²)。目標：批次操作（新增/移除地址）前一次 dump 介面地址建記憶體集合，逐一查詢改為集合查詢；或 Kernel 介面新增批次/索引查詢能力，使呼叫端消除重複 dump。
+- B3：address 模式 waitForDAD 為 C 個地址各開一個 goroutine，各自每 100ms 全量 AddrList dump 檢查 DAD。目標：共享單一輪詢器（一次 dump，fan-out 給所有等待者）。
+- 兩者均為效能結構重構，非正確性修復：外部可觀察行為（回傳值、錯誤語意、回滾順序、逾時上限）必須與現狀完全等價。
+
+### 32.2 等價要求與驗收
+
+- 重構前先以測試鎖定現狀行為（characterization：AddressExists 的存在/不存在/錯誤透傳；waitForDAD 的成功/失敗/逾時與取消語意）；既有測試已涵蓋的部分不重複，只補缺口。
+- 重構後全部既有與新增測試通過；`go test ./... -count=1`（15 packages）、`go vet ./...`、web test/lint/build、Linux amd64/arm64 CGO=0 交叉 build 全綠。
+- 等價的主要證據為 fake kernel 單元測試；明列環境限制：Windows 無 root/netns（真實 netlink integration 未跑）、無 cgo（-race 未跑）。
+- B4 維持列建議，不在本輪範圍。
+
+### 32.3 完成紀錄（2026-08-28）
+
+實作內容（B2/B3 批次查詢重構，使用者「開修吧」授權）：
+
+- `internal/network/manager.go`：Kernel 介面新增 `InterfaceAddresses(ctx, interfaceName) ([]netip.Addr, error)` 與 `WaitAddressesReady(ctx, refs) error`；新增 `interfaceAddressSets` helper（每介面一次 dump 建集合）；removeStale/releaseAddresses/applyAddresses 三處 AddressExists 逐地址查詢改批次（錯誤格式逐字不變："check stale address %s"/"check address %s"/"check address %s on %s"）；waitForDAD 由 per-goroutine WaitAddressReady+cancel 改為單次委派 `kernel.WaitAddressesReady`（per-ref 錯誤包裝 "wait for address %s DAD: %w" 移入 kernel 實作，格式逐字等價，errors.Is(ErrDADFailed) 保持）。
+- `internal/network/kernel_linux.go`：`InterfaceAddresses`（一次 AddrList(FAMILY_V6) 收集，錯誤包裝同 AddressExists）；`WaitAddressesReady`（按介面分組、每介面 link 一次、單一 ticker 每 tick 每介面一次 AddrList、DADFAILED 聚合、失敗時對未決 refs 附 context.Canceled、逾時對剩餘 refs 附 ctx.Err()、errors.Join 返回）。
+- `internal/app/production_build_test.go`：連鎖修復——Kernel 介面新增方法導致 `productionTestKernel` 缺實作，補 InterfaceAddresses/WaitAddressesReady 兩 stub。
+
+TDD 證據：
+
+- RED：新增 6 測試（manager 層 TestApplyAddressesUsesBatchedKernelQueries、TestReconcileStaleRemovalsUseBatchedKernelQueries；kernel_linux 層 TestLinuxKernelInterfaceAddressesReturnsAddresses、TestLinuxKernelWaitAddressesReadyPollsInterfaceOncePerInterval、TestLinuxKernelWaitAddressesReadyAggregatesDADFailure、TestLinuxKernelWaitAddressesReadyPropagatesListError），執行編譯失敗（InterfaceAddresses/WaitAddressesReady undefined 共 5 處）＝缺方法 RED。
+- GREEN：3 次迭代（nil map panic→fake InterfaceAddresses 從 addresses 推導單一真相源→批次計數補齊與 Reconcile 兩階段斷言 2）後，Windows 與 WSL（Linux）`go test ./internal/network` 全綠。
+- 量測：Apply 3 地址——AddressExists 呼叫 3→0、WaitAddressReady 呼叫 3→0，改為 InterfaceAddresses 1 次＋WaitAddressesReady 1 次（dump 次數從 O(C) 降為 O(1)/介面；DAD 輪詢 dump 從 O(C)/tick 降為 O(1)/tick）。
+
+回歸：Windows `go test ./... -count=1` 15 packages 全綠、`go vet ./...` 乾淨；WSL Linux `go test ./...` network/app/node/firewall/eventlog 等全綠（admin 重跑通過）；web `npm test` 73 passed、`npm run lint`、`npm run build` 全過；Linux amd64/arm64 CGO_ENABLED=0 交叉 build 雙架構成功。
+
+環境限制與風險：Windows 無 root/netns（真實 netlink/nftables integration 未跑）、無 cgo（-race 未跑）；WSL2 下 proxy `TestRelayConnectionsHalfClosePreservesReverseTraffic` 系統性 flaky（connection refused，雙 conn pair 特徵；Windows 10/10 穩定；與本輪變更無關，定案不修，真機 Linux 驗證留待後續）；B4 維持建議。

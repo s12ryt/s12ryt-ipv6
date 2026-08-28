@@ -187,3 +187,13 @@
 - [x] 深挖 `web` 輕掃：EventSource 僅 api.ts:221（round8 已深掃）、無 setInterval、copyTimer clearTimeout 保護完整；73 前端測試基線全綠——無新缺陷。
 - [x] B2/B3 決策：本輪不實作（效能重構非正確性；需改 Kernel 介面＋linuxKernel＋waitForDAD＋fake kernel 全鏈；等價驗證需 Linux netlink/netns 環境，Windows 無法執行 integration）。留待下輪專項。
 - [x] 本輪結論：未發現新的正確性缺陷；無程式碼修改，基線（go test 15 packages＋vet）即為驗證；治理檔更新後提交 docs(agent)。
+
+## 2026-08-28 第十輪：B2/B3 批次查詢重構（fix(network)）
+
+- [x] 契約 §32（使用者「開修吧」授權）：B2=AddressExists O(C²)→每介面一次 dump 建集合；B3=waitForDAD 共享單一輪詢器；錯誤語意/回滾順序/逾時上限逐字等價；先 characterization 後重構；B4 不在範圍。
+- [x] RED：6 新測試（manager 層 Apply/Reconcile 批次計數斷言；kernel_linux 層 InterfaceAddresses/單輪詢器/DAD 聚合/dump 錯誤傳播）→ WSL `go test ./internal/network` 編譯失敗（InterfaceAddresses/WaitAddressesReady undefined 5 處）＝缺方法 RED。
+- [x] GREEN：manager.go Kernel 介面＋interfaceAddressSets helper＋三處 AddressExists 批次化（錯誤格式不變）＋waitForDAD 委派 WaitAddressesReady；kernel_linux.go 兩方法（InterfaceAddresses 一次 dump；WaitAddressesReady 按介面分組、單一 ticker、DADFAILED 聚合、失敗/逾時對剩餘 refs 各附 Canceled/ctx.Err()，per-ref 包裝逐字等價）；3 次迭代後 Windows+WSL network 全綠。
+- [x] 量測證據：Apply 3 地址 AddressExists 3→0、WaitAddressReady 3→0（改 InterfaceAddresses 1＋WaitAddressesReady 1）；dump O(C)→O(1)/介面、DAD 輪詢 O(C)→O(1)/tick。
+- [x] 連鎖修復：app production_build_test.go productionTestKernel 補 InterfaceAddresses/WaitAddressesReady 兩 stub（Kernel 介面新增方法破壞既有 fake）。
+- [x] 完整回歸：Windows go test ./... 15 packages＋vet 乾淨；WSL Linux network/app/node/firewall/eventlog 全綠（admin flaky 重跑通過）；web 73 tests＋lint＋build 全過；Linux amd64/arm64 CGO=0 交叉 build 雙架構成功。
+- [x] WSL2 環境限制定案：proxy TestRelayConnectionsHalfClosePreservesReverseTraffic 系統性 flaky（connection refused，雙 conn pair；Windows 10/10 穩定；與本輪無關）不修，真機 Linux 驗證留待後續；-race/integration 環境不可用照舊。
