@@ -202,7 +202,7 @@ func (l *Logger) writeLocked(event Event) error {
 	return nil
 }
 
-func (l *Logger) Clear(actor string) error {
+func (l *Logger) Clear(actor string) (resultErr error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closed {
@@ -211,6 +211,15 @@ func (l *Logger) Clear(actor string) error {
 	if err := l.file.Close(); err != nil {
 		return fmt.Errorf("close log before clear: %w", err)
 	}
+	needsRecovery := true
+	defer func() {
+		if resultErr == nil || !needsRecovery {
+			return
+		}
+		if err := l.reopenCurrentLocked(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("recover current log after clear failure: %w", err))
+		}
+	}()
 	for i := 0; i <= l.backups; i++ {
 		candidate := l.path
 		if i > 0 {
@@ -226,6 +235,7 @@ func (l *Logger) Clear(actor string) error {
 	}
 	l.file = file
 	l.size = 0
+	needsRecovery = false
 	return l.writeLocked(Event{Kind: KindAudit, Action: "log.clear", Actor: actor, Success: true})
 }
 
@@ -242,10 +252,18 @@ func (l *Logger) Close() error {
 	return l.file.Close()
 }
 
-func (l *Logger) rotateLocked() error {
+func (l *Logger) rotateLocked() (resultErr error) {
 	if err := l.file.Close(); err != nil {
 		return fmt.Errorf("close log before rotation: %w", err)
 	}
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+		if err := l.reopenCurrentLocked(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("recover current log after rotation failure: %w", err))
+		}
+	}()
 	if l.backups == 0 {
 		if err := os.Remove(l.path); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove rotated log: %w", err)
@@ -272,6 +290,21 @@ func (l *Logger) rotateLocked() error {
 	}
 	l.file = file
 	l.size = 0
+	return nil
+}
+
+func (l *Logger) reopenCurrentLocked() error {
+	file, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return err
+	}
+	l.file = file
+	l.size = info.Size()
 	return nil
 }
 

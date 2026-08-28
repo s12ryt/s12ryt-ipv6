@@ -126,6 +126,43 @@ func TestLoggerRotatesAndKeepsConfiguredBackups(t *testing.T) {
 	}
 }
 
+func TestLoggerRecoversAfterRotationFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	logger, err := New(path, 1, 1, nil, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	if err := logger.Write(Event{Kind: KindSystem, Action: "before-failure"}); err != nil {
+		t.Fatal(err)
+	}
+	blockedBackup := path + ".1"
+	if err := os.Mkdir(blockedBackup, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(blockedBackup, "block"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := logger.Write(Event{Kind: KindSystem, Action: "rotation-fails"}); err == nil {
+		t.Fatal("Write() error = nil while backup removal is blocked")
+	}
+	if err := os.RemoveAll(blockedBackup); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := logger.Write(Event{Kind: KindSystem, Action: "after-recovery"}); err != nil {
+		t.Fatalf("Write() after rotation obstruction cleared = %v", err)
+	}
+	events, err := logger.Tail(Filter{Action: "after-recovery"}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Action != "after-recovery" {
+		t.Fatalf("Tail() after recovery = %#v", events)
+	}
+}
+
 func TestLoggerClearRemovesRotationsAndStartsWithAuditEvent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	logger, err := New(path, 160, 3, nil, time.Now)
@@ -166,6 +203,43 @@ func TestLoggerClearRemovesRotationsAndStartsWithAuditEvent(t *testing.T) {
 	}
 	if scanner.Scan() {
 		t.Fatal("cleared log contains events after audit entry")
+	}
+}
+
+func TestLoggerRecoversAfterClearFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	logger, err := New(path, 1024*1024, 1, nil, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	if err := logger.Write(Event{Kind: KindSystem, Action: "before-failure"}); err != nil {
+		t.Fatal(err)
+	}
+	blockedBackup := path + ".1"
+	if err := os.Mkdir(blockedBackup, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(blockedBackup, "block"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := logger.Clear("admin"); err == nil {
+		t.Fatal("Clear() error = nil while backup removal is blocked")
+	}
+	if err := os.RemoveAll(blockedBackup); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := logger.Write(Event{Kind: KindSystem, Action: "after-recovery"}); err != nil {
+		t.Fatalf("Write() after clear obstruction removed = %v", err)
+	}
+	events, err := logger.Tail(Filter{Action: "after-recovery"}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Action != "after-recovery" {
+		t.Fatalf("Tail() after recovery = %#v", events)
 	}
 }
 
