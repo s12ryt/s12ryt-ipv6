@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -60,6 +61,95 @@ func (c *fakePacketConn) LocalAddr() net.Addr              { return c.local }
 func (c *fakePacketConn) SetDeadline(time.Time) error      { return nil }
 func (c *fakePacketConn) SetReadDeadline(time.Time) error  { return nil }
 func (c *fakePacketConn) SetWriteDeadline(time.Time) error { return nil }
+
+type deadlinePacketConn struct {
+	*fakePacketConn
+
+	deadlineMu      sync.Mutex
+	readDeadline    time.Time
+	deadlineChanged chan struct{}
+}
+
+func newDeadlinePacketConn(local net.Addr) *deadlinePacketConn {
+	return &deadlinePacketConn{
+		fakePacketConn:  newFakePacketConn(local),
+		deadlineChanged: make(chan struct{}),
+	}
+}
+
+func (c *deadlinePacketConn) ReadFrom(payload []byte) (int, net.Addr, error) {
+	for {
+		c.deadlineMu.Lock()
+		deadline := c.readDeadline
+		changed := c.deadlineChanged
+		c.deadlineMu.Unlock()
+
+		var timer *time.Timer
+		var expired <-chan time.Time
+		if !deadline.IsZero() {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return 0, nil, os.ErrDeadlineExceeded
+			}
+			timer = time.NewTimer(remaining)
+			expired = timer.C
+		}
+		select {
+		case frame := <-c.incoming:
+			if timer != nil {
+				timer.Stop()
+			}
+			return copy(payload, frame.payload), frame.addr, nil
+		case <-c.closed:
+			if timer != nil {
+				timer.Stop()
+			}
+			return 0, nil, net.ErrClosed
+		case <-changed:
+			if timer != nil {
+				timer.Stop()
+			}
+		case <-expired:
+			return 0, nil, os.ErrDeadlineExceeded
+		}
+	}
+}
+
+func (c *deadlinePacketConn) SetDeadline(deadline time.Time) error {
+	return c.SetReadDeadline(deadline)
+}
+
+func (c *deadlinePacketConn) SetReadDeadline(deadline time.Time) error {
+	c.deadlineMu.Lock()
+	changed := c.deadlineChanged
+	c.readDeadline = deadline
+	c.deadlineChanged = make(chan struct{})
+	close(changed)
+	c.deadlineMu.Unlock()
+	return nil
+}
+
+type failingDeadlinePacketConn struct {
+	*fakePacketConn
+	err error
+}
+
+func (c *failingDeadlinePacketConn) ReadFrom([]byte) (int, net.Addr, error) {
+	return 0, nil, net.ErrClosed
+}
+
+func (c *failingDeadlinePacketConn) SetReadDeadline(time.Time) error { return c.err }
+
+type failingWritePacketConn struct {
+	*fakePacketConn
+	written chan struct{}
+	once    sync.Once
+}
+
+func (c *failingWritePacketConn) WriteTo([]byte, net.Addr) (int, error) {
+	c.once.Do(func() { close(c.written) })
+	return 0, errors.New("client UDP socket write failed")
+}
 
 type relaySocketBinder struct {
 	packet   *fakePacketConn
@@ -374,6 +464,115 @@ func TestSOCKS5UDPMappingRemoteTrafficRefreshesIdleTimeout(t *testing.T) {
 	_ = origin.Close()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestUDPAssociationRemoteTrafficRefreshesAssociationIdleTimeout(t *testing.T) {
+	packet := newDeadlinePacketConn(&net.UDPAddr{IP: net.ParseIP("192.0.2.1"), Port: 51000})
+	upstream, origin := net.Pipe()
+	mapping := &udpMapping{
+		conn: upstream,
+		destination: statute.AddrSpec{
+			AddrType: statute.ATYPDomain, FQDN: "example.com", Port: 53,
+		},
+		client: &net.UDPAddr{IP: net.ParseIP("192.0.2.10"), Port: 54000},
+	}
+	association := &udpAssociation{
+		packet: packet, idleTimeout: 150 * time.Millisecond,
+		mappings: map[string]*udpMapping{"mapping": mapping},
+	}
+	association.wg.Add(1)
+	go association.readMapping("mapping", mapping)
+	done := make(chan error, 1)
+	go func() {
+		_, err := association.run(context.Background())
+		done <- err
+	}()
+
+	for _, response := range []string{"first", "second"} {
+		time.Sleep(100 * time.Millisecond)
+		if _, err := origin.Write([]byte(response)); err != nil {
+			t.Fatalf("write remote response %q: %v", response, err)
+		}
+		select {
+		case frame := <-packet.outgoing:
+			datagram, err := statute.ParseDatagram(frame.payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(datagram.Data) != response {
+				t.Fatalf("response payload = %q, want %q", datagram.Data, response)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for %q response", response)
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("association ended despite remote activity: %v", err)
+		default:
+		}
+	}
+
+	_ = packet.Close()
+	_ = origin.Close()
+	<-done
+}
+
+func TestUDPAssociationRemovesMappingWhenClientWriteFails(t *testing.T) {
+	packet := &failingWritePacketConn{
+		fakePacketConn: newFakePacketConn(&net.UDPAddr{IP: net.ParseIP("192.0.2.1"), Port: 51000}),
+		written:        make(chan struct{}),
+	}
+	upstream, origin := net.Pipe()
+	mapping := &udpMapping{
+		conn: upstream,
+		destination: statute.AddrSpec{
+			AddrType: statute.ATYPDomain, FQDN: "example.com", Port: 53,
+		},
+		client: &net.UDPAddr{IP: net.ParseIP("192.0.2.10"), Port: 54000},
+	}
+	association := &udpAssociation{
+		packet: packet, idleTimeout: time.Minute,
+		mappings: map[string]*udpMapping{"mapping": mapping},
+	}
+	association.wg.Add(1)
+	go association.readMapping("mapping", mapping)
+	go func() { _, _ = origin.Write([]byte("response")) }()
+
+	select {
+	case <-packet.written:
+	case <-time.After(time.Second):
+		t.Fatal("mapping did not attempt to write the client response")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		association.mu.Lock()
+		_, exists := association.mappings["mapping"]
+		association.mu.Unlock()
+		if !exists {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("failed client write left a stale UDP mapping")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	_ = origin.Close()
+	association.wg.Wait()
+}
+
+func TestUDPAssociationReportsPacketDeadlineFailure(t *testing.T) {
+	deadlineErr := errors.New("set packet deadline failed")
+	packet := &failingDeadlinePacketConn{
+		fakePacketConn: newFakePacketConn(&net.UDPAddr{IP: net.ParseIP("192.0.2.1"), Port: 51000}),
+		err:            deadlineErr,
+	}
+	association := &udpAssociation{
+		packet: packet, idleTimeout: time.Minute, mappings: make(map[string]*udpMapping),
+	}
+	_, err := association.run(context.Background())
+	if !errors.Is(err, deadlineErr) {
+		t.Fatalf("run() error = %v, want %v", err, deadlineErr)
 	}
 }
 

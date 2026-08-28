@@ -201,6 +201,7 @@ type udpAssociation struct {
 	mu       sync.Mutex
 	mappings map[string]*udpMapping
 	traffic  ProxyTraffic
+	asyncErr error
 	wg       sync.WaitGroup
 }
 
@@ -216,9 +217,14 @@ func (a *udpAssociation) run(ctx context.Context) (ProxyTraffic, error) {
 	defer a.closeMappings()
 	buffer := make([]byte, 64*1024)
 	for {
-		_ = a.packet.SetReadDeadline(time.Now().Add(a.idleTimeout))
+		if err := a.setReadDeadline(); err != nil {
+			return a.snapshot(), err
+		}
 		read, source, err := a.packet.ReadFrom(buffer)
 		if err != nil {
+			if asyncErr := a.asyncError(); asyncErr != nil {
+				return a.snapshot(), asyncErr
+			}
 			if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
 				return a.snapshot(), nil
 			}
@@ -298,6 +304,13 @@ func (a *udpAssociation) readMapping(key string, mapping *udpMapping) {
 		response := statute.Datagram{DstAddr: mapping.destination, Data: append([]byte(nil), buffer[:read]...)}
 		written, writeErr := a.packet.WriteTo(response.Bytes(), mapping.client)
 		if writeErr != nil {
+			a.removeMapping(key, mapping)
+			return
+		}
+		if err := a.setReadDeadline(); err != nil {
+			a.setAsyncError(err)
+			a.removeMapping(key, mapping)
+			_ = a.packet.Close()
 			return
 		}
 		headerLength := len(response.Header())
@@ -353,6 +366,27 @@ func (a *udpAssociation) snapshot() ProxyTraffic {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.traffic
+}
+
+func (a *udpAssociation) setReadDeadline() error {
+	if err := a.packet.SetReadDeadline(time.Now().Add(a.idleTimeout)); err != nil {
+		return fmt.Errorf("set UDP association idle deadline: %w", err)
+	}
+	return nil
+}
+
+func (a *udpAssociation) setAsyncError(err error) {
+	a.mu.Lock()
+	if a.asyncErr == nil {
+		a.asyncErr = err
+	}
+	a.mu.Unlock()
+}
+
+func (a *udpAssociation) asyncError() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.asyncErr
 }
 
 func netAddrPort(address net.Addr) (netip.AddrPort, error) {
