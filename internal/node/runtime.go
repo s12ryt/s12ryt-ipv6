@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 
 	"github.com/s12ryt/s12ryt-ipv6/internal/proxy"
@@ -129,6 +130,20 @@ func (f *ListenerRuntimeFactory) Replace(ctx context.Context, current Runtime, c
 	if !ok || !sameBindings(runtime.endpoints, config.Port, config.Inbound) {
 		return f.Start(ctx, config)
 	}
+	port := runtime.Port()
+	config.Port = port
+	runtime.mu.Lock()
+	if runtime.stopping {
+		runtime.mu.Unlock()
+		return nil, errors.New("node runtime is stopping")
+	}
+	if sameRuntimeConfigExceptMetadata(runtime.config, config) {
+		runtime.config = config
+		runtime.mu.Unlock()
+		return runtime, nil
+	}
+	runtime.mu.Unlock()
+
 	handler, err := f.handlers.Build(config)
 	if err != nil {
 		return nil, fmt.Errorf("build replacement node handler: %w", err)
@@ -137,13 +152,11 @@ func (f *ListenerRuntimeFactory) Replace(ctx context.Context, current Runtime, c
 		return nil, errors.New("node handler builder returned nil")
 	}
 
-	port := runtime.Port()
 	runtime.mu.Lock()
 	if runtime.stopping {
 		runtime.mu.Unlock()
 		return nil, errors.New("node runtime is stopping")
 	}
-	config.Port = port
 	runtime.config = config
 	runtime.handler = handler
 	active := make([]net.Conn, 0, len(runtime.active))
@@ -157,6 +170,25 @@ func (f *ListenerRuntimeFactory) Replace(ctx context.Context, current Runtime, c
 		_ = conn.Close()
 	}
 	return runtime, nil
+}
+
+func sameRuntimeConfigExceptMetadata(left, right Config) bool {
+	return left.ID == right.ID &&
+		left.Protocol == right.Protocol &&
+		left.Username == right.Username &&
+		left.Password == right.Password &&
+		left.MaxTCP == right.MaxTCP &&
+		left.MaxUDP == right.MaxUDP &&
+		left.DialTimeout == right.DialTimeout &&
+		left.HandshakeTimeout == right.HandshakeTimeout &&
+		left.TunnelIdleTimeout == right.TunnelIdleTimeout &&
+		left.UDPIdleTimeout == right.UDPIdleTimeout &&
+		left.ULAOverride == right.ULAOverride &&
+		left.Outbound == right.Outbound &&
+		left.DedicatedPool == right.DedicatedPool &&
+		left.InboundMode == right.InboundMode &&
+		left.InboundResource == right.InboundResource &&
+		slices.Equal(left.Inbound, right.Inbound)
 }
 
 type listenerRuntime struct {

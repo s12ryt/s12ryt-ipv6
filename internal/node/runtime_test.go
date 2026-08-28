@@ -130,6 +130,22 @@ func (h *multiReadHandler) ServeConn(_ context.Context, conn net.Conn) (proxy.Pr
 	return proxy.ProxyTraffic{Protocol: "socks"}, err
 }
 
+type streamingHandler struct {
+	entered  chan struct{}
+	received chan byte
+}
+
+func (h *streamingHandler) ServeConn(_ context.Context, conn net.Conn) (proxy.ProxyTraffic, error) {
+	close(h.entered)
+	buffer := make([]byte, 1)
+	for {
+		if _, err := io.ReadFull(conn, buffer); err != nil {
+			return proxy.ProxyTraffic{Protocol: "socks"}, err
+		}
+		h.received <- buffer[0]
+	}
+}
+
 func (h *blockingHandler) ServeConn(ctx context.Context, _ net.Conn) (proxy.ProxyTraffic, error) {
 	h.once.Do(func() { close(h.entered) })
 	<-ctx.Done()
@@ -158,11 +174,11 @@ func runtimeConfig() Config {
 }
 
 type panicOnceHandler struct {
-	panicked  atomic.Bool
+	panicked   atomic.Bool
 	panickedAt chan struct{}
-	entered   chan struct{}
-	onceP     sync.Once
-	onceE     sync.Once
+	entered    chan struct{}
+	onceP      sync.Once
+	onceE      sync.Once
 }
 
 func (h *panicOnceHandler) ServeConn(_ context.Context, conn net.Conn) (proxy.ProxyTraffic, error) {
@@ -414,6 +430,7 @@ func TestListenerRuntimeReplacesHandlerOnSameBindingsWithoutRebinding(t *testing
 
 	replacement := created.Config
 	replacement.Name = "replacement"
+	replacement.HandshakeTimeout += time.Second
 	updated, err := manager.Update(context.Background(), replacement.ID, replacement, false)
 	if err != nil {
 		t.Fatal(err)
@@ -441,6 +458,70 @@ func TestListenerRuntimeReplacesHandlerOnSameBindingsWithoutRebinding(t *testing
 	}
 	_ = firstClient.Close()
 	_ = secondClient.Close()
+}
+
+func TestListenerRuntimeMetadataUpdatePreservesActiveConnections(t *testing.T) {
+	binder := &listenerBinder{}
+	allocator, _ := proxy.NewPortAllocator(52000, 52000, binder)
+	handler := &streamingHandler{entered: make(chan struct{}), received: make(chan byte, 1)}
+	builder := &staticHandlerBuilder{handler: handler}
+	factory, err := NewListenerRuntimeFactory(ListenerRuntimeOptions{
+		Allocator: allocator, Handlers: builder, Firewall: &fakeNodeFirewall{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewManager(factory, nil, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := manager.Create(context.Background(), runtimeConfig(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, server := net.Pipe()
+	binder.listeners[0].incoming <- server
+	select {
+	case <-handler.entered:
+	case <-time.After(time.Second):
+		t.Fatal("active connection did not start")
+	}
+	if _, err := manager.Update(context.Background(), created.Config.ID, created.Config, false); err != nil {
+		t.Fatal(err)
+	}
+	if builder.calls != 1 {
+		t.Fatalf("no-op update built %d handlers, want 1", builder.calls)
+	}
+
+	replacement := created.Config
+	replacement.Name = "renamed"
+	updated, err := manager.Update(context.Background(), replacement.ID, replacement, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Config.Name != "renamed" {
+		t.Fatalf("updated node name = %q", updated.Config.Name)
+	}
+	if builder.calls != 1 {
+		t.Fatalf("metadata-only update built %d handlers, want 1", builder.calls)
+	}
+	_ = client.SetWriteDeadline(time.Now().Add(time.Second))
+	if _, err := client.Write([]byte{'x'}); err != nil {
+		t.Fatalf("metadata-only update closed active connection: %v", err)
+	}
+	select {
+	case received := <-handler.received:
+		if received != 'x' {
+			t.Fatalf("received byte = %q", received)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("active connection stopped forwarding after metadata update")
+	}
+
+	_ = client.Close()
+	if _, err := manager.Stop(context.Background(), replacement.ID); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestListenerRuntimeRefreshesBindingsAndDrainsRemovedConnections(t *testing.T) {
