@@ -75,6 +75,38 @@ func TestRegistryIsSafeUnderConcurrentUpdates(t *testing.T) {
 	}
 }
 
+func TestRegistryRemoveNodeDeletesCounters(t *testing.T) {
+	registry := NewRegistry()
+	registry.TCPOpened("edge")
+	registry.TCPOpened("other")
+
+	registry.RemoveNode("edge")
+
+	snapshot := registry.Snapshot()
+	if _, exists := snapshot.Nodes["edge"]; exists {
+		t.Fatalf("removed node still present in snapshot: %v", snapshot.Nodes)
+	}
+	if _, exists := snapshot.Nodes["other"]; !exists {
+		t.Fatalf("unrelated node missing from snapshot: %v", snapshot.Nodes)
+	}
+}
+
+func TestRegistryRemoveNodeIgnoresUnknownAndEmptyNodes(t *testing.T) {
+	registry := NewRegistry()
+	registry.TCPOpened("edge")
+
+	registry.RemoveNode("")
+	registry.RemoveNode("missing")
+
+	snapshot := registry.Snapshot()
+	if len(snapshot.Nodes) != 1 {
+		t.Fatalf("snapshot nodes = %v", snapshot.Nodes)
+	}
+	if _, exists := snapshot.Nodes["edge"]; !exists {
+		t.Fatalf("edge node missing after no-op removals: %v", snapshot.Nodes)
+	}
+}
+
 func TestSnapshotSaveLoadRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "stats.json")
 	registry := NewRegistry()

@@ -111,6 +111,18 @@ func (r *Registry) ResetNode(node string) {
 	r.nodes[node] = NodeCounters{ActiveTCP: counters.ActiveTCP, ActiveUDP: counters.ActiveUDP}
 }
 
+// RemoveNode drops a node's counters entirely. Callers use it when the node is
+// permanently deleted so stale entries stop reappearing in every saved
+// snapshot; unknown or empty IDs are ignored.
+func (r *Registry) RemoveNode(node string) {
+	if node == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.nodes, node)
+}
+
 func (r *Registry) ResetAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
