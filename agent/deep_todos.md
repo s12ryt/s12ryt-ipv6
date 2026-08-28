@@ -165,3 +165,14 @@
 - [x] 核心掃描確認 eventlog Tail 持鎖、runtime Stop、DAD、背景 goroutine/ticker、原子狀態 store 無可穩定證明的新正確性缺陷，未做臆測性重構。
 - [x] 完整驗證：`go test ./... -count=1 -timeout=300s`、`go vet ./...`、web 13 files/73 tests、lint、Vite build、Linux amd64/arm64 CGO=0 build、`git diff --check` 全通過。
 - [x] 環境限制：Windows 無 root/network namespace，未跑真實 netlink/nftables integration；無 GCC/CGO，未跑 `-race`；未安裝 gopls，故以 test/vet/build 替代 LSP 診斷。
+
+## 2026-08-28 第八輪：未深挖模組稽核與池輪換修復
+
+- [x] 提交第七輪未提交修復：四個原子提交 fix(proxy) f7a6e7d、fix(node) 9510cc3、fix(eventlog) 6f9e82a、docs(agent) fbe35ac。
+- [x] 依 `agent/question.md` §30 掃描既有未修項與前七輪未深挖模組（secret、auth、stats、config、admin HTTP/SSE/control、cmd CLI parser）；`secret`/`auth`/`stats`/`config`/`cmd` 無缺陷，management.go http.Server 無 WriteTimeout（SSE 不受影響），store `automaticCount==0` 覆蓋定案為 pinned==capacity 池的刻意補償，不修。
+- [x] 修復 eventlog `Tail` 持鎖全量解碼阻塞 Write（300k 行下 Write 被 Tail 阻塞 1.47s）：短鎖內開啟全部檔段 fd＋快照 current size，鎖外解碼，current 以 io.LimitReader 防半行；RED `TestLoggerTailDoesNotBlockConcurrentWrites`。
+- [x] 修復使用者回報的池輪換缺陷「輪換ipv6池怎麼都是在第一輪和第二輪來回」：任何資源事務與每條 draining 連線結束都觸發 runtime.Sync → OutboundRegistry.Sync 對既有池呼叫 `Replace(pool.Active)` → 原實作無條件 `p.next = 0` 重置 round-robin；修復為集合相同（slices.Equal）時不重置 cursor。RED `TestSourcePoolReplaceWithSameAddressesKeepsRoundRobinPosition`；過程中重複 mu.Lock 自我死鎖由既有 dialer 測試（changed 路徑）捕獲修正。
+- [x] 修復 admin `RequireMutation` Origin 檢查硬編碼 http scheme，HTTPS 反代（README 可信安全通道）下所有寫操作 403：改為 scheme ∈ {http,https} 且 origin.Host == request.Host；https same-host origin 契約由 403 改為放行。RED `TestHTTPServerMutationGuardAcceptsHTTPSSameHostOrigin`。
+- [x] 修復 admin control `Serve` accept loop 同步 handleConn，長 agent apply（10 分鐘）阻塞後續 control 連線（安裝器 120s 健康檢查誤判回滾）：改為 goroutine-per-connection，ctx 取消仍中止每條連線。RED `TestControlServerServesSecondConnectionWhileFirstIsBusy`。
+- [x] 完整驗證：`go test ./... -count=1 -timeout=300s` 15 packages、`go vet ./...`、web 73 tests、lint、build、Linux amd64/arm64 CGO=0 build 全通過。
+- [x] 環境限制同第七輪：無 root/netns（integration 未跑）、無 cgo/gcc（-race 未跑）、無 gopls。

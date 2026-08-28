@@ -192,3 +192,11 @@
 - 修改：`internal/proxy/udp_relay.go`、`socks5_udp_test.go`、`relay_test.go`；`internal/node/runtime.go`、`runtime_test.go`；`internal/eventlog/logger.go`、`logger_test.go`；治理契約與紀錄。`agent/項目表.md` 無需更新，因無新增檔案、模組或依賴關係。
 - 驗證：改碼前基線 `go test ./...` 與 vet 全綠；最終 `go test ./... -count=1 -timeout=300s` 15 packages、`go vet ./...`、web `npm test -- --run` 13 files/73 tests、`npm run lint`、`npm run build`、Linux amd64/arm64 CGO=0 build、`git diff --check` 全通過。
 - 未完整驗證：Windows 無 Linux root/network namespace，未執行真實 netlink/nftables integration；無 GCC/CGO，未執行 `go test -race`；未安裝 gopls，LSP diagnostics 無法執行。以可攜單元測試、vet 與雙架構交叉建置替代；本輪未提交或推送。
+## 2026-08-28 第八輪（自主疊代：未深挖模組＋池輪換）
+- 契約：§30——既有未修項＋secret/auth/stats/config/admin(HTTP/SSE/control)/cmd 深挖；B2/B3/B4 不在範圍；完成報告寫入 question.md §30.3。
+- 修復 1 RED：`TestLoggerTailDoesNotBlockConcurrentWrites` 失敗訊息「Write blocked for 1.4768667s while Tail was decoding」。GREEN：`internal/eventlog/logger.go` Tail 短鎖開 fd＋size 快照、鎖外解碼、current 用 io.LimitReader(size)；eventlog 9 測試全過。
+- 修復 4 RED：`TestSourcePoolReplaceWithSameAddressesKeepsRoundRobinPosition` 失敗「round robin after identical Replace = [::1 ::2 ::3 ::4], want [::4 ::1 ::2 ::3]」。GREEN：`internal/proxy/source_pool.go` Replace 開頭 identical 集合（slices.Equal）早退不重置 next；首次 GREEN 曾引入重複 p.mu.Lock 自我死鎖（TestDialerRetriesDestinationsWithOneSourceLeaseAndReleasesOnClose 240s timeout 捕獲），刪除重複 Lock 後 proxy/node 全過。
+- 修復 2 RED：新增 `TestHTTPServerMutationGuardAcceptsHTTPSSameHostOrigin`（https same-host 期望 204、ftp/evil/null/空 期望 403）＋既有 guard 測試 https 斷言 403→204、called 1→2。GREEN：`internal/admin/http.go` 新增 sameHostOrigin helper（url.Parse＋scheme 白名單＋Host 相等）、RequireMutation 呼叫之；admin 全套過。
+- 修復 3 RED：`TestControlServerServesSecondConnectionWhileFirstIsBusy` 失敗「second control connection was blocked by the first connection's handler」。GREEN：`internal/admin/control.go` Serve accept loop 改 `go s.handleConn(ctx, connection)`；ControlServer 全套過。
+- 驗證：`go test ./... -count=1 -timeout=300s` 15 packages 全綠；`go vet ./...` 乾淨；web `npm test` 73 tests、`npm run lint`、`npm run build` 全過；Linux amd64/arm64 CGO=0 交叉 build 成功。
+- 未完整驗證：同前輪（無 root/netns、無 -race、無 gopls）。

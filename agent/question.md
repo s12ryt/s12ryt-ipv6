@@ -427,3 +427,31 @@
 - 代理驗收至少涵蓋：零 timeout 不設 deadline、非零 timeout 雙向刷新、單向長傳輸、half-close、context 取消、UDP 雙向刷新、各入口握手 deadline 清除。
 - 全後端掃描須檢查 panic、死鎖/競態、goroutine/FD/記憶體洩漏、錯誤吞沒、交易回滾、原子持久化、邊界值、協定偏差、安全性及不必要的熱路徑成本。
 - 完成時須通過受影響測試、`go test ./... -count=1 -timeout=300s`、`go vet ./...`、前端既有 test/lint/build（若後端 embed 或契約受影響），以及 Linux amd64/arm64 CGO-disabled 交叉 build；Linux root/netns 或 race 因本機環境不可執行時須明列替代證據與剩餘風險。
+
+## 30. 第八輪自主疊代：既有未修項與未深挖區域
+
+更新日期：2026-08-28
+狀態：使用者再次觸發「自主疊代升級」並指出「代碼底層還有 bug」；本節為本輪實作與驗收契約。使用者已確認先提交第七輪未提交修復，再以「既有未修項＋未深挖區域」為本輪掃描重點。
+
+### 30.1 範圍
+
+- 既有未修觀察項：eventlog `Tail` 持鎖全量解碼（查詢期間代理事件寫入排隊）、`ipv6resource` store `automaticCount==0` 覆蓋 err 的語意驗證。
+- 前七輪未深入稽核的模組：`internal/secret`（master key、vault、credentials、Argon2id）、`internal/auth`（session、CSRF、limiter）、`internal/stats`、`internal/config`、`internal/admin` 的 HTTP handlers／SSE／control socket，以及 `cmd` CLI parser。
+- 不重掃前七輪已證實安全的區域，除非本輪發現與其結論衝突的新證據。
+
+### 30.2 修復與驗收
+
+- 每項修復維持 RED → GREEN → REFACTOR 週期；只修可由決定性測試或可執行證據證明的缺陷。
+- 效能瓶頸 B2/B3/B4（Kernel 介面批次化重構）本輪明示不在範圍，維持列建議。
+- 維持 §29.3 的相容性、錯誤語意與安全邊界要求。
+- 完成門檻同 §29.4：受影響測試、`go test ./... -count=1 -timeout=300s`、`go vet ./...`、必要時前端 test/lint/build，以及 Linux amd64/arm64 CGO-disabled 交叉 build。
+
+### 30.3 完成紀錄（2026-08-28）
+
+- 掃描結論：`secret`、`auth`、`stats`、`config`、`cmd`（main.go／agent_cli.go）無缺陷；`internal/app/management.go` 的 http.Server 無 WriteTimeout，SSE 長連線不受影響，無需修復；store `automaticCount==0` 覆蓋定案為刻意補償（pinned==capacity 池的合法路徑），不修。
+- 修復 1（eventlog `Tail`）：原持 `l.mu` 全程逐行解碼最多 6 檔段（每段可達 100MB），Write 阻塞 1.47s；改為短鎖內檢查 closed＋開啟全部檔段 fd＋快照 current size，鎖外解碼；current 段以 `io.LimitReader` 防半行；文檔明示與 rotation/Clear 併發時為近似快照。RED：`TestLoggerTailDoesNotBlockConcurrentWrites`。
+- 修復 2（admin `RequireMutation`）：Origin 檢查硬編碼 `http://`+Host，HTTPS 反代（README 承諾的可信安全通道）下所有寫操作 403；改為 `sameHostOrigin` helper——解析 Origin，scheme ∈ {http, https} 且 `origin.Host == request.Host`。契約變更：https same-host origin 由 403 改為放行（CSRF 防護核心是 same-host，攻擊者無法偽造受害者 Host）。既有測試 403 斷言同步改 204。RED：`TestHTTPServerMutationGuardAcceptsHTTPSSameHostOrigin`＋既有 guard 測試斷言調整。
+- 修復 3（admin control `Serve`）：accept loop 同步呼叫 `handleConn`，長 agent apply（預設 10 分鐘）阻塞後續 control 連線（安裝器 120 秒健康檢查會誤判失敗回滾）；改為 `go s.handleConn(ctx, connection)` goroutine-per-connection；併發安全（AgentService 與 HTTP handlers 共用 services、PasswordManager 有 mu、activeSettings 建構後唯讀），ctx 取消仍透過 handleConn 的 watcher 中止每條連線。RED：`TestControlServerServesSecondConnectionWhileFirstIsBusy`。
+- 修復 4（proxy `SourcePool.Replace`，使用者回報）：任何資源事務與每條 draining 地址連線結束都觸發 runtime.Sync → OutboundRegistry.Sync 對既有池呼叫 `Replace(pool.Active)` → 原實作無條件 `p.next = 0` 重置 round-robin，出站選址只在池內前兩個地址間來回；修復為新地址集合與 current 完全相同（`slices.Equal`）時直接 return nil，不重置 cursor、不動 draining。真 refresh（集合變化）仍重置。過程中曾引入重複 `p.mu.Lock()` 自我死鎖，由既有 dialer 測試（changed 路徑）捕獲後修正——回歸保護網生效。RED：`TestSourcePoolReplaceWithSameAddressesKeepsRoundRobinPosition`。
+- 驗證：`go test ./... -count=1 -timeout=300s` 15 packages 全綠；`go vet ./...` 乾淨；前端 `npm test`（73 測試）、`npm run lint`、`npm run build` 全綠；Linux amd64/arm64 CGO-disabled 交叉 build 成功。
+- 未修風險：eventlog `Tail` 與 rotation/Clear 併發時為近似快照（可能重複／遺漏少量事件）；Windows 上併發 Clear 可能因 fd 共享語意失敗（production 為 Linux，可接受）。
