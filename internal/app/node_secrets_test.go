@@ -2,14 +2,19 @@ package app
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/s12ryt/s12ryt-ipv6/internal/node"
 )
 
 type secretTestNodeService struct {
-	created node.Node
-	updated node.Node
+	created       node.Node
+	updated       node.Node
+	existing      node.Node
+	existingFound bool
+	deleteErr     error
+	deletedID     string
 }
 
 func (s *secretTestNodeService) Create(context.Context, node.Config, bool) (node.Node, error) {
@@ -27,22 +32,49 @@ func (s *secretTestNodeService) Start(context.Context, string) (node.Node, error
 func (s *secretTestNodeService) Stop(context.Context, string) (node.Node, error) {
 	return node.Node{}, nil
 }
-func (s *secretTestNodeService) Delete(context.Context, string) error { return nil }
+func (s *secretTestNodeService) Delete(_ context.Context, id string) error {
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	s.deletedID = id
+	return nil
+}
 func (s *secretTestNodeService) MoveToFolder(context.Context, string, string) (node.Node, error) {
 	return node.Node{}, nil
 }
 func (s *secretTestNodeService) RenameFolder(context.Context, string, string) ([]node.Node, error) {
 	return nil, nil
 }
-func (s *secretTestNodeService) Get(string) (node.Node, bool) { return node.Node{}, false }
+func (s *secretTestNodeService) Get(string) (node.Node, bool) { return s.existing, s.existingFound }
 func (s *secretTestNodeService) List() []node.Node            { return nil }
 
 type secretTestRegistrar struct {
-	values []string
+	values       []string
+	unregistered []string
 }
 
 func (r *secretTestRegistrar) RegisterSecret(value string) {
 	r.values = append(r.values, value)
+}
+
+func (r *secretTestRegistrar) UnregisterSecret(value string) {
+	r.unregistered = append(r.unregistered, value)
+}
+
+type registerOnlyTestRegistrar struct {
+	values []string
+}
+
+func (r *registerOnlyTestRegistrar) RegisterSecret(value string) {
+	r.values = append(r.values, value)
+}
+
+type statsTestRemover struct {
+	removed []string
+}
+
+func (r *statsTestRemover) RemoveNode(nodeID string) {
+	r.removed = append(r.removed, nodeID)
 }
 
 func TestSecretRegisteringNodeServiceRegistersCreatedAndUpdatedCredentials(t *testing.T) {
@@ -51,7 +83,7 @@ func TestSecretRegisteringNodeServiceRegistersCreatedAndUpdatedCredentials(t *te
 		updated: node.Node{Config: node.Config{Username: "updated-user", Password: "updated-password"}},
 	}
 	registrar := &secretTestRegistrar{}
-	service, err := newSecretRegisteringNodeService(delegate, registrar)
+	service, err := newSecretRegisteringNodeService(delegate, registrar, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,10 +105,86 @@ func TestSecretRegisteringNodeServiceRegistersCreatedAndUpdatedCredentials(t *te
 }
 
 func TestSecretRegisteringNodeServiceValidatesDependencies(t *testing.T) {
-	if _, err := newSecretRegisteringNodeService(nil, &secretTestRegistrar{}); err == nil {
+	if _, err := newSecretRegisteringNodeService(nil, &secretTestRegistrar{}, nil); err == nil {
 		t.Fatal("nil node service accepted")
 	}
-	if _, err := newSecretRegisteringNodeService(&secretTestNodeService{}, nil); err == nil {
+	if _, err := newSecretRegisteringNodeService(&secretTestNodeService{}, nil, nil); err == nil {
 		t.Fatal("nil secret registrar accepted")
+	}
+}
+
+func TestSecretRegisteringNodeServiceDeleteCleansUpSecretsAndStats(t *testing.T) {
+	delegate := &secretTestNodeService{
+		existing:      node.Node{Config: node.Config{ID: "node-1", Username: "user-a", Password: "pass-a"}},
+		existingFound: true,
+	}
+	registrar := &secretTestRegistrar{}
+	remover := &statsTestRemover{}
+	service, err := newSecretRegisteringNodeService(delegate, registrar, remover)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.Delete(context.Background(), "node-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	wantUnregistered := []string{"user-a", "pass-a"}
+	if len(registrar.unregistered) != len(wantUnregistered) {
+		t.Fatalf("unregistered values = %v", registrar.unregistered)
+	}
+	for index := range wantUnregistered {
+		if registrar.unregistered[index] != wantUnregistered[index] {
+			t.Fatalf("unregistered values = %v, want %v", registrar.unregistered, wantUnregistered)
+		}
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != "node-1" {
+		t.Fatalf("removed stats nodes = %v", remover.removed)
+	}
+}
+
+func TestSecretRegisteringNodeServiceDeleteFailureSkipsCleanup(t *testing.T) {
+	delegate := &secretTestNodeService{
+		existing:      node.Node{Config: node.Config{ID: "node-1", Username: "user-a", Password: "pass-a"}},
+		existingFound: true,
+		deleteErr:     errors.New("delegate failure"),
+	}
+	registrar := &secretTestRegistrar{}
+	remover := &statsTestRemover{}
+	service, err := newSecretRegisteringNodeService(delegate, registrar, remover)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.Delete(context.Background(), "node-1"); err == nil {
+		t.Fatal("Delete() error = nil, want delegate failure")
+	}
+
+	if len(registrar.unregistered) != 0 {
+		t.Fatalf("secrets unregistered despite failed delete: %v", registrar.unregistered)
+	}
+	if len(remover.removed) != 0 {
+		t.Fatalf("stats removed despite failed delete: %v", remover.removed)
+	}
+}
+
+func TestSecretRegisteringNodeServiceDeleteToleratesRegisterOnlyRegistrar(t *testing.T) {
+	delegate := &secretTestNodeService{
+		existing:      node.Node{Config: node.Config{ID: "node-2", Username: "user-b", Password: "pass-b"}},
+		existingFound: true,
+	}
+	registrar := &registerOnlyTestRegistrar{}
+	remover := &statsTestRemover{}
+	service, err := newSecretRegisteringNodeService(delegate, registrar, remover)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.Delete(context.Background(), "node-2"); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+
+	if len(remover.removed) != 1 || remover.removed[0] != "node-2" {
+		t.Fatalf("removed stats nodes = %v", remover.removed)
 	}
 }

@@ -12,16 +12,29 @@ type secretRegistrar interface {
 	RegisterSecret(string)
 }
 
-type secretRegisteringNodeService struct {
-	delegate  admin.NodeService
-	registrar secretRegistrar
+// secretUnregistrar is implemented by registrars that can also release a
+// previously registered secret when the owning node goes away.
+type secretUnregistrar interface {
+	UnregisterSecret(string)
 }
 
-func newSecretRegisteringNodeService(delegate admin.NodeService, registrar secretRegistrar) (*secretRegisteringNodeService, error) {
+// nodeStatsRemover is implemented by statistics registries that can drop a
+// deleted node's counters so stale entries stop persisting to disk.
+type nodeStatsRemover interface {
+	RemoveNode(string)
+}
+
+type secretRegisteringNodeService struct {
+	delegate     admin.NodeService
+	registrar    secretRegistrar
+	statsRemover nodeStatsRemover
+}
+
+func newSecretRegisteringNodeService(delegate admin.NodeService, registrar secretRegistrar, statsRemover nodeStatsRemover) (*secretRegisteringNodeService, error) {
 	if delegate == nil || registrar == nil {
 		return nil, errors.New("node service and secret registrar are required")
 	}
-	return &secretRegisteringNodeService{delegate: delegate, registrar: registrar}, nil
+	return &secretRegisteringNodeService{delegate: delegate, registrar: registrar, statsRemover: statsRemover}, nil
 }
 
 func (s *secretRegisteringNodeService) Create(ctx context.Context, config node.Config, confirm bool) (node.Node, error) {
@@ -59,7 +72,19 @@ func (s *secretRegisteringNodeService) Stop(ctx context.Context, id string) (nod
 }
 
 func (s *secretRegisteringNodeService) Delete(ctx context.Context, id string) error {
-	return s.delegate.Delete(ctx, id)
+	// Capture the credentials before deletion; after a successful delete they
+	// are no longer referenced by any live node and can be released.
+	existing, found := s.delegate.Get(id)
+	if err := s.delegate.Delete(ctx, id); err != nil {
+		return err
+	}
+	if found {
+		s.unregister(existing)
+	}
+	if s.statsRemover != nil {
+		s.statsRemover.RemoveNode(id)
+	}
+	return nil
 }
 
 func (s *secretRegisteringNodeService) MoveToFolder(ctx context.Context, id, folder string) (node.Node, error) {
@@ -84,6 +109,19 @@ func (s *secretRegisteringNodeService) register(current node.Node) {
 	}
 	if current.Config.Password != "" {
 		s.registrar.RegisterSecret(current.Config.Password)
+	}
+}
+
+func (s *secretRegisteringNodeService) unregister(current node.Node) {
+	unregistrar, ok := s.registrar.(secretUnregistrar)
+	if !ok {
+		return
+	}
+	if current.Config.Username != "" {
+		unregistrar.UnregisterSecret(current.Config.Username)
+	}
+	if current.Config.Password != "" {
+		unregistrar.UnregisterSecret(current.Config.Password)
 	}
 }
 

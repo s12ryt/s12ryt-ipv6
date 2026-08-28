@@ -371,7 +371,7 @@ func buildProduction(options ProductionOptions, platform productionPlatform) (_ 
 	if err != nil {
 		return nil, err
 	}
-	nodeService, err := newSecretRegisteringNodeService(persistentNodes, logger)
+	nodeService, err := newSecretRegisteringNodeService(persistentNodes, logger, registry)
 	if err != nil {
 		return nil, err
 	}
