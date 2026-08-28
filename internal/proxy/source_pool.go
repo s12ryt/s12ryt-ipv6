@@ -67,12 +67,21 @@ func (p *SourcePool) Replace(addresses []netip.Addr) error {
 	if err != nil {
 		return err
 	}
+
+	p.mu.Lock()
+	if slices.Equal(p.current, normalized) {
+		// The reported active set is unchanged. Runtime synchronisation runs
+		// after every resource transaction and drain completion, so treating
+		// that as a rotation would restart round-robin selection from the top
+		// and repeatedly reuse only the first addresses. Keep the cursor.
+		p.mu.Unlock()
+		return nil
+	}
 	newSet := make(map[netip.Addr]struct{}, len(normalized))
 	for _, address := range normalized {
 		newSet[address] = struct{}{}
 	}
 
-	p.mu.Lock()
 	ready := make([]netip.Addr, 0)
 	for _, address := range p.current {
 		if _, keep := newSet[address]; keep {

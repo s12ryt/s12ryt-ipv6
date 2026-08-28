@@ -93,6 +93,53 @@ func TestSourcePoolReplaceDrainsOnlyAddressesWithActiveLeases(t *testing.T) {
 	next.Release()
 }
 
+func TestSourcePoolReplaceWithSameAddressesKeepsRoundRobinPosition(t *testing.T) {
+	addresses := []netip.Addr{
+		netip.MustParseAddr("2001:4860:1::1"),
+		netip.MustParseAddr("2001:4860:1::2"),
+		netip.MustParseAddr("2001:4860:1::3"),
+		netip.MustParseAddr("2001:4860:1::4"),
+	}
+	drained := make([]netip.Addr, 0, 1)
+	pool, err := NewSourcePool(slices.Clone(addresses), func(address netip.Addr) {
+		drained = append(drained, address)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 3; i++ {
+		lease, err := pool.Acquire()
+		if err != nil {
+			t.Fatal(err)
+		}
+		lease.Release()
+	}
+
+	for i := 0; i < 3; i++ {
+		if err := pool.Replace(slices.Clone(addresses)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	want := []netip.Addr{addresses[3], addresses[0], addresses[1], addresses[2]}
+	got := make([]netip.Addr, 0, len(want))
+	for range len(want) {
+		lease, err := pool.Acquire()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, lease.Address())
+		lease.Release()
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("round robin after identical Replace = %v, want %v (cursor was reset)", got, want)
+	}
+	if len(drained) != 0 {
+		t.Fatalf("identical Replace drained %v, want none", drained)
+	}
+}
+
 func TestSourcePoolValidatesAndOwnsItsAddressSlices(t *testing.T) {
 	a := netip.MustParseAddr("2001:4860:1::1")
 	b := netip.MustParseAddr("2001:4860:1::2")
