@@ -48,6 +48,38 @@ func (r *fakePasswordResetter) Reset(replacement string) (string, error) {
 	return r.result, r.err
 }
 
+type panickingAgentControlHandler struct{}
+
+func (panickingAgentControlHandler) HandleAgent(context.Context, json.RawMessage) (json.RawMessage, error) {
+	panic("agent handler exploded")
+}
+
+func TestControlServerHandleConnRecoversFromHandlerPanic(t *testing.T) {
+	server, err := NewControlServerWithAgent(&fakePasswordResetter{}, panickingAgentControlHandler{}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, service := net.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- server.HandleConn(service) }()
+
+	if _, err := client.Write([]byte("{\"action\":\"agent\",\"request\":{}}\n")); err != nil {
+		t.Fatal(err)
+	}
+	var response ControlResponse
+	if err := json.NewDecoder(bufio.NewReader(client)).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	client.Close()
+	handleErr := <-done
+	if handleErr == nil {
+		t.Fatal("HandleConn() error = nil, want panic converted into an error")
+	}
+	if response.OK || response.Error == "" {
+		t.Fatalf("response = %#v, want error reply without crashing", response)
+	}
+}
+
 func TestControlServerResetsPasswordAndReturnsGeneratedValue(t *testing.T) {
 	resetter := &fakePasswordResetter{result: "generated-password"}
 	server, err := NewControlServer(resetter, time.Second)

@@ -118,7 +118,7 @@ func (s *ControlServer) HandleConn(connection net.Conn) error {
 	return s.handleConn(context.Background(), connection)
 }
 
-func (s *ControlServer) handleConn(ctx context.Context, connection net.Conn) error {
+func (s *ControlServer) handleConn(ctx context.Context, connection net.Conn) (returnErr error) {
 	if connection == nil {
 		return errors.New("control connection is required")
 	}
@@ -130,6 +130,16 @@ func (s *ControlServer) handleConn(ctx context.Context, connection net.Conn) err
 		case <-ctx.Done():
 			_ = connection.Close()
 		case <-done:
+		}
+	}()
+	// A panic inside a resetter or agent handler must not take down the whole
+	// process: convert it into an error reply. Registered after
+	// connection.Close so the reply is written before the connection is torn
+	// down when the deferred calls unwind.
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			_ = writeControlResponse(connection, ControlResponse{Error: "internal control error"})
+			returnErr = fmt.Errorf("control connection handler panicked: %v", recovered)
 		}
 	}()
 	if err := connection.SetDeadline(time.Now().Add(s.readTimeout)); err != nil {
