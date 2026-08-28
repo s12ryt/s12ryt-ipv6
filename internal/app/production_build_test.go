@@ -42,6 +42,12 @@ func (productionTestKernel) AddressExists(context.Context, network.AddressRef) (
 func (productionTestKernel) AddAddress(context.Context, network.AddressRef) error       { return nil }
 func (productionTestKernel) RemoveAddress(context.Context, network.AddressRef) error    { return nil }
 func (productionTestKernel) WaitAddressReady(context.Context, network.AddressRef) error { return nil }
+func (productionTestKernel) InterfaceAddresses(context.Context, string) ([]netip.Addr, error) {
+	return nil, nil
+}
+func (productionTestKernel) WaitAddressesReady(context.Context, []network.AddressRef) error {
+	return nil
+}
 func (productionTestKernel) LocalRouteExists(context.Context, network.RouteRef) (bool, error) {
 	return false, nil
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +19,8 @@ type fakeNetlinkDriver struct {
 	link           netlink.Link
 	addresses      []netlink.Addr
 	addressLists   [][]netlink.Addr
+	addrListCalls  int
+	addrListErr    error
 	addedAddress   *netlink.Addr
 	deletedAddress *netlink.Addr
 	routes         []netlink.Route
@@ -28,6 +31,10 @@ type fakeNetlinkDriver struct {
 func (f *fakeNetlinkDriver) LinkByName(string) (netlink.Link, error) { return f.link, nil }
 
 func (f *fakeNetlinkDriver) AddrList(netlink.Link, int) ([]netlink.Addr, error) {
+	f.addrListCalls++
+	if f.addrListErr != nil {
+		return nil, f.addrListErr
+	}
 	if len(f.addressLists) > 0 {
 		result := f.addressLists[0]
 		f.addressLists = f.addressLists[1:]
@@ -111,6 +118,116 @@ func TestLinuxKernelWaitsUntilDADReadyAndRejectsDADFailure(t *testing.T) {
 	driver.addressLists = [][]netlink.Addr{{{IPNet: ipnet, Flags: unix.IFA_F_DADFAILED}}}
 	if err := kernel.WaitAddressReady(context.Background(), ref); !errors.Is(err, ErrDADFailed) {
 		t.Fatalf("WaitAddressReady() error = %v, want ErrDADFailed", err)
+	}
+}
+
+func TestLinuxKernelInterfaceAddressesReturnsAddresses(t *testing.T) {
+	ip1 := &net.IPNet{IP: net.IP(netip.MustParseAddr("2001:4860:1::1").AsSlice()), Mask: net.CIDRMask(128, 128)}
+	ip2 := &net.IPNet{IP: net.IP(netip.MustParseAddr("2001:4860:1::2").AsSlice()), Mask: net.CIDRMask(128, 128)}
+	driver := &fakeNetlinkDriver{
+		link:      &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "eth0", Index: 7}},
+		addresses: []netlink.Addr{{IPNet: ip1}, {IPNet: ip2}},
+	}
+	kernel := newLinuxKernel(driver, &fakeBindValidator{}, time.Millisecond)
+
+	addresses, err := kernel.InterfaceAddresses(context.Background(), "eth0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want1 := netip.MustParseAddr("2001:4860:1::1")
+	want2 := netip.MustParseAddr("2001:4860:1::2")
+	if len(addresses) != 2 || addresses[0] != want1 || addresses[1] != want2 {
+		t.Fatalf("InterfaceAddresses() = %v, want [%s %s]", addresses, want1, want2)
+	}
+
+	driver.addrListErr = errors.New("netlink down")
+	if _, err := kernel.InterfaceAddresses(context.Background(), "eth0"); err == nil || !strings.Contains(err.Error(), "list IPv6 addresses on eth0") {
+		t.Fatalf("InterfaceAddresses() error = %v, want wrapped list error", err)
+	}
+}
+
+func TestLinuxKernelWaitAddressesReadyPollsInterfaceOncePerInterval(t *testing.T) {
+	ip1 := &net.IPNet{IP: net.IP(netip.MustParseAddr("2001:4860:1::1").AsSlice()), Mask: net.CIDRMask(128, 128)}
+	ip2 := &net.IPNet{IP: net.IP(netip.MustParseAddr("2001:4860:1::2").AsSlice()), Mask: net.CIDRMask(128, 128)}
+	driver := &fakeNetlinkDriver{
+		link: &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "eth0", Index: 7}},
+		addressLists: [][]netlink.Addr{
+			{{IPNet: ip1, Flags: unix.IFA_F_TENTATIVE}, {IPNet: ip2, Flags: unix.IFA_F_TENTATIVE}},
+			{{IPNet: ip1}, {IPNet: ip2}},
+		},
+	}
+	kernel := newLinuxKernel(driver, &fakeBindValidator{}, time.Millisecond)
+	refs := []AddressRef{
+		{Interface: "eth0", Address: netip.MustParseAddr("2001:4860:1::1")},
+		{Interface: "eth0", Address: netip.MustParseAddr("2001:4860:1::2")},
+	}
+
+	if err := kernel.WaitAddressesReady(context.Background(), refs); err != nil {
+		t.Fatal(err)
+	}
+
+	if driver.addrListCalls != 2 {
+		t.Fatalf("AddrList calls = %d, want 2 (single shared poller, not one per address)", driver.addrListCalls)
+	}
+}
+
+func TestLinuxKernelWaitAddressesReadyAggregatesDADFailure(t *testing.T) {
+	ip1 := &net.IPNet{IP: net.IP(netip.MustParseAddr("2001:4860:1::1").AsSlice()), Mask: net.CIDRMask(128, 128)}
+	ip2 := &net.IPNet{IP: net.IP(netip.MustParseAddr("2001:4860:1::2").AsSlice()), Mask: net.CIDRMask(128, 128)}
+	ip3 := &net.IPNet{IP: net.IP(netip.MustParseAddr("2001:4860:1::3").AsSlice()), Mask: net.CIDRMask(128, 128)}
+	driver := &fakeNetlinkDriver{
+		link: &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "eth0", Index: 7}},
+		addressLists: [][]netlink.Addr{
+			{{IPNet: ip1}, {IPNet: ip2, Flags: unix.IFA_F_DADFAILED}, {IPNet: ip3, Flags: unix.IFA_F_TENTATIVE}},
+		},
+	}
+	kernel := newLinuxKernel(driver, &fakeBindValidator{}, time.Millisecond)
+	refs := []AddressRef{
+		{Interface: "eth0", Address: netip.MustParseAddr("2001:4860:1::1")},
+		{Interface: "eth0", Address: netip.MustParseAddr("2001:4860:1::2")},
+		{Interface: "eth0", Address: netip.MustParseAddr("2001:4860:1::3")},
+	}
+
+	err := kernel.WaitAddressesReady(context.Background(), refs)
+	if err == nil {
+		t.Fatal("WaitAddressesReady() error = nil, want DAD failure aggregation")
+	}
+	if !errors.Is(err, ErrDADFailed) {
+		t.Fatalf("WaitAddressesReady() error = %v, want ErrDADFailed", err)
+	}
+	message := err.Error()
+	if !strings.Contains(message, "wait for address 2001:4860:1::2 DAD") || !strings.Contains(message, "2001:4860:1::2 on eth0") {
+		t.Fatalf("error = %q, want failed address wrapped per ref", message)
+	}
+	if !strings.Contains(message, "wait for address 2001:4860:1::3 DAD") || !strings.Contains(message, "context canceled") {
+		t.Fatalf("error = %q, want pending addresses reported as canceled", message)
+	}
+	if strings.Contains(message, "wait for address 2001:4860:1::1 DAD") {
+		t.Fatalf("error = %q, ready address must not be reported as failed", message)
+	}
+}
+
+func TestLinuxKernelWaitAddressesReadyPropagatesListError(t *testing.T) {
+	driver := &fakeNetlinkDriver{
+		link:        &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "eth0", Index: 7}},
+		addrListErr: errors.New("netlink down"),
+	}
+	kernel := newLinuxKernel(driver, &fakeBindValidator{}, time.Millisecond)
+	refs := []AddressRef{
+		{Interface: "eth0", Address: netip.MustParseAddr("2001:4860:1::1")},
+		{Interface: "eth0", Address: netip.MustParseAddr("2001:4860:1::2")},
+	}
+
+	err := kernel.WaitAddressesReady(context.Background(), refs)
+	if err == nil {
+		t.Fatal("WaitAddressesReady() error = nil, want list error propagation")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "wait for address 2001:4860:1::1 DAD") || !strings.Contains(message, "list IPv6 addresses during DAD on eth0") {
+		t.Fatalf("error = %q, want per-ref wrapped list error", message)
+	}
+	if !strings.Contains(message, "wait for address 2001:4860:1::2 DAD") {
+		t.Fatalf("error = %q, want every waiting address reported", message)
 	}
 }
 

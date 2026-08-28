@@ -3,6 +3,7 @@ package network
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"sync"
 	"testing"
@@ -12,27 +13,116 @@ import (
 )
 
 type fakeKernel struct {
-	mu              sync.Mutex
-	addresses       map[AddressRef]bool
-	routes          map[RouteRef]bool
-	dadErrors       map[AddressRef]error
-	waitForCancel   map[AddressRef]bool
-	bindErrors      map[AddressRef]error
-	removeAddrError map[AddressRef]error
-	removeRouteErr  map[RouteRef]error
-	addAddresses    []AddressRef
-	removeAddresses []AddressRef
-	addRoutes       []RouteRef
-	removeRoutes    []RouteRef
-	waitStarted     chan AddressRef
-	waitGate        <-chan struct{}
-	operations      *[]string
+	mu                sync.Mutex
+	addresses         map[AddressRef]bool
+	routes            map[RouteRef]bool
+	dadErrors         map[AddressRef]error
+	waitForCancel     map[AddressRef]bool
+	bindErrors        map[AddressRef]error
+	removeAddrError   map[AddressRef]error
+	removeRouteErr    map[RouteRef]error
+	addAddresses      []AddressRef
+	removeAddresses   []AddressRef
+	addRoutes         []RouteRef
+	removeRoutes      []RouteRef
+	waitStarted       chan AddressRef
+	waitGate          <-chan struct{}
+	operations        *[]string
+	existsCalls       int
+	interfaceAddrs    map[string][]netip.Addr
+	interfaceAddrErr  error
+	waitBatchErr      error
+	interfaceAddrCalls int
+	waitReadyCalls    int
+	waitBatchCalls    int
+	waitBatchRefs     []AddressRef
+}
+
+func (f *fakeKernel) callCounts() (exists, interfaceAddrs, waitReady, waitBatch int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.existsCalls, f.interfaceAddrCalls, f.waitReadyCalls, f.waitBatchCalls
+}
+
+func (f *fakeKernel) batchWaitRefs() []AddressRef {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]AddressRef(nil), f.waitBatchRefs...)
 }
 
 func (f *fakeKernel) AddressExists(_ context.Context, ref AddressRef) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.existsCalls++
 	return f.addresses[ref], nil
+}
+
+func (f *fakeKernel) InterfaceAddresses(_ context.Context, iface string) ([]netip.Addr, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.interfaceAddrCalls++
+	if f.interfaceAddrErr != nil {
+		return nil, f.interfaceAddrErr
+	}
+	if f.interfaceAddrs != nil {
+		return f.interfaceAddrs[iface], nil
+	}
+	// Derive from the addresses map so both query styles stay consistent.
+	var result []netip.Addr
+	for ref, present := range f.addresses {
+		if present && ref.Interface == iface {
+			result = append(result, ref.Address)
+		}
+	}
+	return result, nil
+}
+
+func (f *fakeKernel) WaitAddressesReady(ctx context.Context, refs []AddressRef) error {
+	f.mu.Lock()
+	f.waitBatchCalls++
+	f.waitBatchRefs = append(f.waitBatchRefs, refs...)
+	f.mu.Unlock()
+	for _, ref := range refs {
+		if f.waitStarted != nil {
+			f.waitStarted <- ref
+		}
+	}
+	f.mu.Lock()
+	for _, ref := range refs {
+		if err := f.dadErrors[ref]; err != nil {
+			failures := []error{fmt.Errorf("wait for address %s DAD: %w", ref.Address, err)}
+			for _, other := range refs {
+				if other == ref {
+					continue
+				}
+				failures = append(failures, fmt.Errorf("wait for address %s DAD: %w", other.Address, context.Canceled))
+			}
+			joined := errors.Join(failures...)
+			f.mu.Unlock()
+			return joined
+		}
+	}
+	waitForCancel := false
+	for _, ref := range refs {
+		if f.waitForCancel[ref] {
+			waitForCancel = true
+			break
+		}
+	}
+	gate := f.waitGate
+	f.mu.Unlock()
+	if waitForCancel {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 func (f *fakeKernel) AddAddress(_ context.Context, ref AddressRef) error {
@@ -77,6 +167,7 @@ func (f *fakeKernel) WaitAddressReady(ctx context.Context, ref AddressRef) error
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.waitReadyCalls++
 	return f.dadErrors[ref]
 }
 
@@ -554,6 +645,79 @@ func TestReconcilePersistsSuccessfulRemovalsWhenARemovalFails(t *testing.T) {
 	}
 	if store.saves < 1 {
 		t.Fatal("ownership saves = 0, want successful removals persisted")
+	}
+}
+
+func TestApplyAddressesUsesBatchedKernelQueries(t *testing.T) {
+	template := mustTemplate(t, ipv6resource.ModeAddress)
+	a := addressRef(template, "2001:4860:1::1")
+	b := addressRef(template, "2001:4860:1::2")
+	c := addressRef(template, "2001:4860:1::3")
+	kernel := &fakeKernel{
+		addresses:      make(map[AddressRef]bool),
+		routes:         make(map[RouteRef]bool),
+		bindErrors:     make(map[AddressRef]error),
+		interfaceAddrs: map[string][]netip.Addr{template.Interface: {}},
+	}
+	store := &memoryOwnershipStore{}
+	manager, err := NewResourceManager(kernel, store, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.Apply(context.Background(), template, []netip.Addr{a.Address, b.Address, c.Address}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	exists, interfaceAddrs, waitReady, waitBatch := kernel.callCounts()
+	if exists != 0 {
+		t.Errorf("AddressExists calls = %d, want 0 (batched via InterfaceAddresses)", exists)
+	}
+	if interfaceAddrs != 1 {
+		t.Errorf("InterfaceAddresses calls = %d, want 1 per interface", interfaceAddrs)
+	}
+	if waitReady != 0 {
+		t.Errorf("WaitAddressReady calls = %d, want 0 (batched via WaitAddressesReady)", waitReady)
+	}
+	if waitBatch != 1 {
+		t.Errorf("WaitAddressesReady calls = %d, want 1", waitBatch)
+	}
+	if refs := kernel.batchWaitRefs(); len(refs) != 3 {
+		t.Errorf("WaitAddressesReady refs = %v, want 3 added addresses", refs)
+	}
+}
+
+func TestReconcileStaleRemovalsUseBatchedKernelQueries(t *testing.T) {
+	template := mustTemplate(t, ipv6resource.ModeAddress)
+	stale1 := addressRef(template, "2001:4860:1::1")
+	stale2 := addressRef(template, "2001:4860:1::2")
+	keep := addressRef(template, "2001:4860:1::3")
+	kernel := &fakeKernel{
+		addresses:      map[AddressRef]bool{stale1: true, stale2: true},
+		routes:         make(map[RouteRef]bool),
+		bindErrors:     make(map[AddressRef]error),
+		interfaceAddrs: map[string][]netip.Addr{template.Interface: {stale1.Address, stale2.Address}},
+	}
+	store := &memoryOwnershipStore{state: Ownership{Addresses: []AddressRef{stale1, stale2, keep}}}
+	manager, err := NewResourceManager(kernel, store, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	desired := []DesiredResource{{Template: template, Addresses: []netip.Addr{keep.Address}}}
+	if err := manager.Reconcile(context.Background(), desired); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	exists, interfaceAddrs, _, _ := kernel.callCounts()
+	if exists != 0 {
+		t.Errorf("AddressExists calls = %d, want 0 (batched via InterfaceAddresses)", exists)
+	}
+	// Reconcile batches twice on this path: once for stale removals and once
+	// for the apply pre-check of the desired address (one dump per interface
+	// per phase instead of one dump per address).
+	if interfaceAddrs != 2 {
+		t.Errorf("InterfaceAddresses calls = %d, want 2 (one per Reconcile phase)", interfaceAddrs)
 	}
 }
 

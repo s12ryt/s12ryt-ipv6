@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"syscall"
 	"time"
 
@@ -57,6 +58,27 @@ func (k *linuxKernel) AddressExists(ctx context.Context, ref AddressRef) (bool, 
 	return findAddress(addresses, ref.Address) != nil, nil
 }
 
+func (k *linuxKernel) InterfaceAddresses(ctx context.Context, interfaceName string) ([]netip.Addr, error) {
+	link, err := k.link(ctx, interfaceName)
+	if err != nil {
+		return nil, err
+	}
+	addresses, err := k.driver.AddrList(link, netlink.FAMILY_V6)
+	if err != nil {
+		return nil, fmt.Errorf("list IPv6 addresses on %s: %w", interfaceName, err)
+	}
+	result := make([]netip.Addr, 0, len(addresses))
+	for _, address := range addresses {
+		if address.IPNet == nil {
+			continue
+		}
+		if addr, ok := netip.AddrFromSlice(address.IPNet.IP); ok {
+			result = append(result, addr.Unmap())
+		}
+	}
+	return result, nil
+}
+
 func (k *linuxKernel) AddAddress(ctx context.Context, ref AddressRef) error {
 	link, err := k.link(ctx, ref.Interface)
 	if err != nil {
@@ -103,6 +125,97 @@ func (k *linuxKernel) WaitAddressReady(ctx context.Context, ref AddressRef) erro
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// WaitAddressesReady shares a single poller per interface instead of one
+// goroutine per address. Error aggregation keeps the per-address wrapping
+// used by the single-address variant ("wait for address %s DAD: %w") so the
+// resulting errors stay identical for callers.
+func (k *linuxKernel) WaitAddressesReady(ctx context.Context, refs []AddressRef) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	var groups []string
+	byInterface := make(map[string][]AddressRef, 1)
+	for _, ref := range refs {
+		if _, seen := byInterface[ref.Interface]; !seen {
+			groups = append(groups, ref.Interface)
+		}
+		byInterface[ref.Interface] = append(byInterface[ref.Interface], ref)
+	}
+	links := make(map[string]netlink.Link, len(groups))
+	for _, name := range groups {
+		link, err := k.link(ctx, name)
+		if err != nil {
+			return err
+		}
+		links[name] = link
+	}
+
+	pending := make([]AddressRef, len(refs))
+	copy(pending, refs)
+	ticker := time.NewTicker(k.pollInterval)
+	defer ticker.Stop()
+	for {
+		var failures []error
+		ready := make(map[AddressRef]struct{})
+		failed := make(map[AddressRef]struct{})
+		for _, name := range groups {
+			addresses, err := k.driver.AddrList(links[name], netlink.FAMILY_V6)
+			if err != nil {
+				wrapped := fmt.Errorf("list IPv6 addresses during DAD on %s: %w", name, err)
+				for _, ref := range byInterface[name] {
+					failures = append(failures, fmt.Errorf("wait for address %s DAD: %w", ref.Address, wrapped))
+					failed[ref] = struct{}{}
+				}
+				continue
+			}
+			for _, ref := range byInterface[name] {
+				if _, done := ready[ref]; done {
+					continue
+				}
+				address := findAddress(addresses, ref.Address)
+				if address == nil {
+					continue
+				}
+				if address.Flags&unix.IFA_F_DADFAILED != 0 {
+					failures = append(failures, fmt.Errorf("wait for address %s DAD: %w", ref.Address,
+						fmt.Errorf("%w: %s on %s", ErrDADFailed, ref.Address, ref.Interface)))
+					failed[ref] = struct{}{}
+					continue
+				}
+				if address.Flags&unix.IFA_F_TENTATIVE == 0 {
+					ready[ref] = struct{}{}
+				}
+			}
+		}
+		pending = slices.DeleteFunc(pending, func(ref AddressRef) bool {
+			_, done := ready[ref]
+			return done
+		})
+		if len(failures) > 0 {
+			// A failure aborts the whole wait; remaining addresses see the
+			// cancellation just like the per-address waiters used to.
+			for _, ref := range pending {
+				if _, hit := failed[ref]; hit {
+					continue
+				}
+				failures = append(failures, fmt.Errorf("wait for address %s DAD: %w", ref.Address, context.Canceled))
+			}
+			return errors.Join(failures...)
+		}
+		if len(pending) == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			for _, ref := range pending {
+				failures = append(failures, fmt.Errorf("wait for address %s DAD: %w", ref.Address, ctx.Err()))
+			}
+			return errors.Join(failures...)
 		case <-ticker.C:
 		}
 	}

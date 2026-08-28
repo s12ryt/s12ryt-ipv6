@@ -31,6 +31,12 @@ type Ownership struct {
 
 type Kernel interface {
 	AddressExists(context.Context, AddressRef) (bool, error)
+	// InterfaceAddresses lists every IPv6 address currently assigned to the
+	// interface so callers can batch existence checks into one dump.
+	InterfaceAddresses(ctx context.Context, interfaceName string) ([]netip.Addr, error)
+	// WaitAddressesReady waits until every address finishes DAD, sharing a
+	// single poller per interface instead of one goroutine per address.
+	WaitAddressesReady(ctx context.Context, refs []AddressRef) error
 	AddAddress(context.Context, AddressRef) error
 	RemoveAddress(context.Context, AddressRef) error
 	WaitAddressReady(context.Context, AddressRef) error
@@ -156,19 +162,58 @@ func (m *ResourceManager) Shutdown(ctx context.Context) error {
 	return m.removeStale(ctx, map[AddressRef]struct{}{}, map[RouteRef]struct{}{})
 }
 
+// interfaceAddressSets performs a single address dump per interface and
+// returns the resulting address sets along with any per-interface lookup
+// errors, so callers can batch AddressExists checks into one dump.
+func interfaceAddressSets(ctx context.Context, kernel Kernel, refs []AddressRef) (map[string]map[netip.Addr]struct{}, map[string]error) {
+	seen := make(map[string]struct{}, 1)
+	names := make([]string, 0, 1)
+	for _, ref := range refs {
+		if _, ok := seen[ref.Interface]; ok {
+			continue
+		}
+		seen[ref.Interface] = struct{}{}
+		names = append(names, ref.Interface)
+	}
+	sets := make(map[string]map[netip.Addr]struct{}, len(names))
+	errs := make(map[string]error, len(names))
+	for _, name := range names {
+		addresses, err := kernel.InterfaceAddresses(ctx, name)
+		if err != nil {
+			errs[name] = err
+			continue
+		}
+		set := make(map[netip.Addr]struct{}, len(addresses))
+		for _, addr := range addresses {
+			set[addr] = struct{}{}
+		}
+		sets[name] = set
+	}
+	return sets, errs
+}
+
 func (m *ResourceManager) removeStale(ctx context.Context, desiredAddresses map[AddressRef]struct{}, desiredRoutes map[RouteRef]struct{}) error {
 	state, err := m.store.Load()
 	if err != nil {
 		return fmt.Errorf("load network ownership: %w", err)
 	}
+	var staleRefs []AddressRef
+	for _, ref := range state.Addresses {
+		if _, keep := desiredAddresses[ref]; !keep {
+			staleRefs = append(staleRefs, ref)
+		}
+	}
+	existing, checkErrs := interfaceAddressSets(ctx, m.kernel, staleRefs)
 	var failures []error
 	stateChanged := false
 	for _, ref := range slices.Clone(state.Addresses) {
 		if _, keep := desiredAddresses[ref]; keep {
 			continue
 		}
-		exists, checkErr := m.kernel.AddressExists(ctx, ref)
-		if checkErr != nil {
+		exists := false
+		if set, ok := existing[ref.Interface]; ok {
+			_, exists = set[ref.Address]
+		} else if checkErr := checkErrs[ref.Interface]; checkErr != nil {
 			failures = append(failures, fmt.Errorf("check stale address %s: %w", ref.Address, checkErr))
 			continue
 		}
@@ -219,11 +264,15 @@ func (m *ResourceManager) releaseAddresses(ctx context.Context, refs []AddressRe
 		}
 	}
 
+	existing, checkErrs := interfaceAddressSets(ctx, m.kernel, refs)
+
 	var failures []error
 	stateChanged := false
 	for _, ref := range refs {
-		exists, checkErr := m.kernel.AddressExists(ctx, ref)
-		if checkErr != nil {
+		exists := false
+		if set, ok := existing[ref.Interface]; ok {
+			_, exists = set[ref.Address]
+		} else if checkErr := checkErrs[ref.Interface]; checkErr != nil {
 			failures = append(failures, fmt.Errorf("check address %s: %w", ref.Address, checkErr))
 			continue
 		}
@@ -287,12 +336,15 @@ func (m *ResourceManager) applyAddresses(ctx context.Context, refs []AddressRef)
 	}
 	state := cloneOwnership(before)
 	owned := addressSet(state.Addresses)
+	existing, checkErrs := interfaceAddressSets(ctx, m.kernel, refs)
 	toAdd := make([]AddressRef, 0, len(refs))
 
 	for _, ref := range refs {
-		exists, err := m.kernel.AddressExists(ctx, ref)
-		if err != nil {
-			return fmt.Errorf("check address %s on %s: %w", ref.Address, ref.Interface, err)
+		exists := false
+		if set, ok := existing[ref.Interface]; ok {
+			_, exists = set[ref.Address]
+		} else if checkErr := checkErrs[ref.Interface]; checkErr != nil {
+			return fmt.Errorf("check address %s on %s: %w", ref.Address, ref.Interface, checkErr)
 		}
 		_, isOwned := owned[ref]
 		if exists && !isOwned {
@@ -410,26 +462,9 @@ func (m *ResourceManager) waitForDAD(ctx context.Context, refs []AddressRef) err
 	ctx, cancel := context.WithTimeout(ctx, m.dadTimeout)
 	defer cancel()
 
-	errs := make(chan error, len(refs))
-	var wg sync.WaitGroup
-	for _, ref := range refs {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := m.kernel.WaitAddressReady(ctx, ref); err != nil {
-				errs <- fmt.Errorf("wait for address %s DAD: %w", ref.Address, err)
-				cancel()
-			}
-		}()
-	}
-	wg.Wait()
-	close(errs)
-
-	var failures []error
-	for err := range errs {
-		failures = append(failures, err)
-	}
-	return errors.Join(failures...)
+	// The kernel aggregates per-address errors (same wrapping as before) while
+	// sharing a single poller per interface.
+	return m.kernel.WaitAddressesReady(ctx, refs)
 }
 
 func (m *ResourceManager) validateBindings(ctx context.Context, refs []AddressRef, freebind bool) error {
