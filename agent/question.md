@@ -608,3 +608,37 @@ TDD 證據：
 
 驗證：`go test ./... -count=1 -timeout=300s` 15 packages 全綠；`go vet ./...` 乾淨；Linux amd64/arm64 CGO_ENABLED=0 交叉 build 成功。前端未動（無契約變更），web test/lint/build 未重跑。環境限制照舊：無 root/netns（integration 未跑）、無 cgo（-race 未跑）。
 
+
+## 35. 第十三輪自主疊代：底層缺陷深挖（歷輪覆蓋最少區域）
+
+更新日期：2026-08-29
+狀態：使用者觸發「自主疊代升級,我覺得代碼底層還有bug,請你找出並修復」；比照第十一/十二輪模式：無具體症狀、全面深挖歷輪覆蓋最少區域。本節為本輪實作與驗收契約。技術細節由 Agent 依既有授權自行定案。
+
+### 35.1 深挖範圍（歷輪覆蓋最少的底層區域）
+
+- `internal/ipv6resource`：template.go / random.go / store.go / state.go / state_store.go——資源核心資料層，歷輪僅於瓶頸審查（B1/R2）時快速掃過，從未逐行深挖。
+- `internal/auth`：session.go / limiter.go——第八輪僅快速掃過（結論「無缺陷」），session 過期/輪替、CSRF 綁定與雙層限速的邊角未逐行驗證。
+- `internal/app` 剩餘未點名檔案：paths.go / policy_provider.go / management.go（第九輪點名 service/connectivity/host_addresses/production_build 等、第十二輪點名 traffic_observer/health/statistics 等，此三檔僅部分觸及）。
+- `internal/admin/frontend.go`（歷輪未點名）。
+- 歷輪殘留觀察項複查：dual 棧＋空 active 池僅聽 IPv4、ReleaseEndpoints Close 失敗仍移除、非 CONNECT 轉送無 idle timeout、WaitAddressesReady 全就緒後仍輪詢。
+- 不重掃前十二輪已證實安全的區域，除非有衝突新證據。
+
+### 35.2 修復與驗收
+
+- 每項缺陷以 RED（可穩定重現的失敗測試）→ GREEN（最小修復）→ REFACTOR 完成；只修可由決定性測試或可執行證據證明的缺陷；不做臆測性重構。
+- 維持 §29.3 相容性、錯誤語意與安全邊界；B4 維持列建議不動。
+- 完成門檻：受影響測試、`go test ./... -count=1 -timeout=300s`、`go vet ./...`、前端 test/lint/build（若契約受影響）、Linux amd64/arm64 CGO=0 交叉 build；環境限制照舊明列。
+
+### 35.3 完成紀錄（2026-08-29）
+
+深挖結論（均無新缺陷）：
+
+- `internal/ipv6resource`：template.go（NewPrefixTemplate 驗證、prefixesOverlap 對位元對齊前綴正確、GenerateAddresses 邊界與溢位終止）、random.go（隨機掩碼合成、128 次嘗試後順序 fallback、prefixIsExhausted 僅小前綴遍歷）、store.go（引用計數增量/釋放、DeletePool releases 聚合檢查、CompleteDrain/CompleteDrainedAddress 冪等、clonePool 深拷貝；`automaticCount==0` 覆蓋寫法維持第八輪定案）、state.go（buildStoreFromState 雙向引用計數驗證、drain 批次全域去重、highestBatch≤NextBatch）、state_store.go（嚴格解碼＋trailing 檢查＋temp+sync+rename）——無缺陷。
+- `internal/auth`：session.go（單 session、token/CSRF SHA-256 雜湊 constant-time 比對、過期檢查先於比對、touch 語意）、limiter.go（滑動視窗、pruneBefore、IPv6 /64 分組）＋admin http.go 登入鏈（429 前不記錄、perSource 上限由 Allow 前置約束、成功 Reset）——無缺陷。
+- `internal/app`：paths.go（純路徑組合）、policy_provider.go（build-new-then-swap 唯讀視圖，F2 契約）、management.go（Listen 雙棧回滾、Serve 緩衝 results 無洩漏、WithoutCancel shutdown timeout）、admin frontend.go（path.Clean＋fs.ValidPath 防穿越、零值 modtime）——無缺陷。
+- `internal/admin/agent_commands.go`（704 行，歷輪從未逐行深挖）：--yes/--show_secrets 確認矩陣與 README 契約一致、錯誤映射（agentNodeCommandFailure）完整、folderAction 冻結快照與 nodes.go 相同模式、批次啟停糾正與 writeNode 相同模式——無缺陷。
+- 覆蓋率導向盲區掃描：`pruneResources` 0.0% 覆蓋——apply `--prune` 資源修剪路徑自 2026-08-24 實作以來從未被任何測試執行，成為本輪缺陷發現的入口。
+
+修復 D1（中嚴重度，agent apply `--prune` 冪等性）：`apply --prune --yes` 同時刪除「使用專用池的節點」與「該專用池」時，`pruneNodes` 刪除節點會連帶清理其專用出站池（node.Manager.Delete → DeleteDedicatedPool），隨後 `pruneResources` 仍以 apply 開始時的快照遍歷，對已消失的池呼叫 `DeletePool` → store 回 `pool %q does not exist` → 整個 apply 誤報 `operation_failed "resource pool prune failed"`（意圖實際已完全達成），且中斷後續 fixed/template 修剪，CLI 退出碼 1。修復：`pruneResources` 在刪除每個池前以最新 `s.resources.Snapshot()` 建立存在集合，快照過時（池已不存在）視為修剪意圖已達成，跳過並繼續；fixed/template 無連帶刪除路徑，維持原樣（最小變更）。場景 C（保留節點引用被 prune 資源）經查已有 `preflightAgentNodeResources` prune 模式防護；場景 A'（Update 輪換專用池）屬專用池壽命綁節點的既有語意。RED：`TestAgentServiceApplyPruneToleratesPoolRemovedWithDedicatedNode`（statefulAgentResourceService 模擬真實 coordinator 動態存在性＋dedicatedPoolNodeService 模擬 manager 連帶清理；修復前 operation_failed，completed 僅 nodes.delete.node-1）→ GREEN：ok=true、completed 含節點刪除、保留池未被刪。
+
+驗證：`go test ./... -count=1 -timeout=300s` 15 packages 全綠；`go vet ./...` 乾淨；變更檔案 gofmt 乾淨；Linux amd64/arm64 CGO_ENABLED=0 交叉 build 成功。前端未動（無契約變更），web test/lint/build 未重跑。環境限制照舊：無 root/netns（integration 未跑）、無 cgo（-race 未跑）。

@@ -230,3 +230,10 @@
 - 修改：internal/dns64/resolver.go（lookupCall 型別、inFlight map、beginLookup、queryEndpoints 抽出、lookup singleflight 化）；internal/dns64/resolver_test.go（blockingQueryer、resolveConcurrently helper、strings import、兩個併發測試）；internal/app/node_secrets.go（Update 前 Get 捕獲、成功後 unregister 舊值＋register 新值）；internal/app/node_secrets_test.go（secretTestNodeService 加 current/hasCurrent 生命週期狀態、countingRegistrar、assertSecretCountsDrained、兩個生命週期測試）；agent/question.md（§34.4）、agent/deep_todos.md（第十二輪段）、agent/memory.md（本節）。
 - 驗證：S1 RED＝兩測「8 upstream queries, want 1」→ GREEN dns64 全綠；S2 RED＝「user-a reference count = 1/2 after full lifecycle, want 0」→ GREEN app 全綠；完整回歸 go test ./... -count=1 15 packages、go vet、Linux amd64/arm64 CGO=0 交叉 build 全過。前端未動未重跑。
 - 環境限制：無 root/netns（integration 未跑）、無 cgo（-race 未跑）。
+## 2026-08-29（第十三輪）
+
+- 自主疊代（「底層還有 bug」）：契約寫入 question.md §35。基線 15 packages＋vet 全綠。
+- 深挖 ipv6resource（template/random/store/state/state_store）、auth（session/limiter＋http.go 登入鏈）、app（paths/policy_provider/management）、admin frontend.go、agent_commands.go（704 行歷輪盲區）——皆無新缺陷；ipv6resource `automaticCount==0` 覆蓋寫法維持第八輪定案。
+- 方法論升級：go test -coverprofile 找 0% 函式 → 發現 `pruneResources`（apply --prune 資源修剪）從未被測試 → 逐行審出缺陷 D1。
+- 修復 D1：apply --prune 刪「專用池節點＋池」時 pruneNodes 連帶清理專用池，pruneResources 用 apply 時快照對已消失池 DeletePool → 誤報 operation_failed 且中斷後續修剪；修復為刪除前以最新 Snapshot 檢查存在性，已消失跳過（冪等語意）。新增 statefulAgentResourceService/dedicatedPoolNodeService 測試 fakes 模擬真實 coordinator/manager 行為；RED 重現 operation_failed "resource pool prune failed"。
+- 驗證：go test ./... 15 packages、vet、gofmt 乾淨；Linux amd64/arm64 CGO=0 build 成功。提交：fix(admin)＋docs(agent)。

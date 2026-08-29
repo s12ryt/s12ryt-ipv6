@@ -216,3 +216,10 @@
 - [x] 修復 S1：dns64 cache stampede——Resolver 新增 inFlight map＋lookupCall；lookup cache miss 後 leader 以 queryEndpoints（原 failover/TTL 語意逐字保留）查詢、followers 共享結果/錯誤並尊重自身 ctx；不持鎖查詢、零新依賴。RED 兩測（blockingQueryer 8 併發同 key，修復前上游 8 次）。
 - [x] 修復 S2：secret 註冊計數殘留——Update 前 Get 捕獲舊 node，成功後先 unregister 舊值再 register 新值（不變淨零、輪換歸零、共用密碼語意保持）。RED 兩測（countingRegistrar 生命週期歸零；修復前輪換殘留 1、不變殘留 2）。
 - [x] 完整回歷：go test ./... -count=1 15 packages、vet、Linux amd64/arm64 CGO=0 交叉 build 全過。環境限制照舊（無 root/netns、無 -race）；前端未動未重跑。
+## 2026-08-29 第十三輪：底層深挖＋apply prune 專用池幻影失敗修復
+
+- [x] 契約 §35（使用者「自主疊代升級,我覺得代碼底層還有bug」）：深挖 ipv6resource/auth/app 剩餘檔案/admin frontend/agent_commands.go（歷輪覆蓋最少）；覆蓋率導向盲區掃找未測路徑；B4 不動。
+- [x] 基線全綠（15 packages＋vet）。深挖結論：ipv6resource（template/random/store/state/state_store 逐行——引用計數、邊界、原子寫全穩健）、auth（session/limiter＋登入鏈）、app paths/policy_provider/management、admin frontend、agent_commands.go（704 行確認矩陣/錯誤映射/凍結快照模式）——均無新缺陷。
+- [x] 覆蓋率掃描發現 `pruneResources` 0.0%（apply --prune 資源修剪自 2026-08-24 以來零測試覆蓋）→ 逐行深挖發現缺陷 D1。
+- [x] 修復 D1（中）：apply `--prune` 同時刪「專用池節點＋其專用池」時，pruneNodes 連帶清理專用池後，pruneResources 拿舊快照對已消失池呼叫 DeletePool → "does not exist" → 誤報 operation_failed 並中斷後續修剪。修復：刪除前以最新 Snapshot 建存在集合，已消失視為意圖達成跳過。RED `TestAgentServiceApplyPruneToleratesPoolRemovedWithDedicatedNode`（stateful fake 模擬 coordinator 動態存在性＋manager 連帶清理）→ GREEN；場景 C 已有 preflightAgentNodeResources prune 防護確認。
+- [x] 完整回歸：go test ./... 15 packages、vet、gofmt、Linux amd64/arm64 CGO=0 交叉 build 全過。環境限制照舊（無 root/netns、無 -race）；前端未動未重跑。
