@@ -643,3 +643,35 @@ TDD 證據：
 
 - 歷輪殘留觀察項複查（四項皆定案不修）：(1) dual 棧＋空 active 池僅聽 IPv4——不可達防禦分支：CreatePool/RefreshPool 保證 len(Active)==Capacity（active=pinned+automatic，任一路徑 ≥1）、state 驗證 len(Active)!=Capacity 拒絕，空池僅存在於測試 fake；(2) ReleaseEndpoints Close 失敗仍移除（port_allocator.go L212-227）——best-effort 釋放且失敗錯誤正確上報（failures→closeErr），Allocate 端實測 bind 逐一探測兜底，殘留佔用只會被跳過不會錯誤分配；真實 binder 下 Close 失敗幾乎不可達；(3) 非 CONNECT 轉送無 idle timeout——觀察有誤差：非 CONNECT 與 CONNECT 共用 relayConnections(ctx, client, reader, upstream, p.tunnelIdleTimeout)（http_proxy.go L114）語意一致，「idle timeout=0 不限時」為第七輪 characterization 測試鎖定的契約；(4) WaitAddressesReady 全就緒後仍輪詢 AddrList——就緒確認本身需要至少一次 dump，必要成本非缺陷。
 驗證：`go test ./... -count=1 -timeout=300s` 15 packages 全綠；`go vet ./...` 乾淨；變更檔案 gofmt 乾淨；Linux amd64/arm64 CGO_ENABLED=0 交叉 build 成功。前端未動（無契約變更），web test/lint/build 未重跑。環境限制照舊：無 root/netns（integration 未跑）、無 cgo（-race 未跑）。
+
+## 36. 第十四輪自主疊代：穩定性定向巡察（競態檢測首跑）
+
+更新日期：2026-08-29
+狀態：使用者觸發「自主疊代升級,我覺得穩定性部分還有缺漏,請你定向巡察一下」；經澄清確認**無具體症狀、預防性巡察**。本節為本輪實作與驗收契約。技術細節由 Agent 依既有授權自行定案。
+
+### 36.1 巡察主軸（定向依據）
+
+- **環境新發現**：WSL 內有 `gcc 14.2.0` 與 `go 1.25.0`——歷輪（第二至十三輪）均以「無 cgo/gcc」為由從未執行 `go test -race`；本次首次執行全套競態檢測，補上 13 輪以來最大的穩定性動態驗證缺口。
+- 靜態審查已飽和（第九、十三輪深挖均「無新缺陷」）；資料競態是程式碼審查最難發現、但 `-race` 可機械化抓出的穩定性缺陷類型，與「穩定性還有缺漏」直覺吻合。
+- 輔助軸：歷輪列為「未驗證」的殘留穩定性項複查。
+
+### 36.2 執行與修復契約
+
+- 於 WSL 對全部 15 個 Go packages 執行 `go test -race -count=1`；race 偵測報告本身即為 RED 證據。
+- 已知環境限制預先排除（不誤報為缺陷）：WSL2 proxy `TestRelayConnectionsHalfClosePreservesReverseTraffic` 系統性 flaky（第十輪定案 connection refused，Windows 穩定）。
+- 每項確認的競態缺陷：穩定重現（race 報告）→ 最小修復 → 修復後該 package `-race` 全綠；禁止以刪除/略過測試換取通過。
+- 修復不得改變外部可觀察行為、錯誤語意與既有公開契約（§29.3 相容性照舊）；B4 維持列建議不動。
+
+### 36.3 驗收門檻
+
+- 全部 15 packages 於 WSL `-race` 下通過（或修復後通過；WSL 環境性 flaky 依第十輪定案以 Windows 對應測試替代證明）。
+- Windows `go test ./... -count=1 -timeout=300s`、`go vet ./...`、gofmt（變更檔）、Linux amd64/arm64 `CGO_ENABLED=0` 交叉 build 全通過。
+- 前端未動則 web test/lint/build 不重跑；治理檔更新後提交。
+
+### 36.4 完成紀錄（2026-08-29）
+
+- **競態檢測（主軸）結論：零資料競態**。WSL（gcc 14.2.0 + go 1.25.0）全套 `go test -race -count=1` 與 `-count=2` 兩輪（不同時序種子）`WARNING: DATA RACE` 均為 0——13 輪以來最大的動態驗證缺口補上，歷輪鎖紀律經機械驗證健全。
+- **3 個測試失敗全部定案為 WSL2 環境故障，非專案缺陷**：`internal/admin` TestControlServerCancellationStopsActiveAgentRequest、TestControlServerServesSecondConnectionWhileFirstIsBusy 與 `internal/proxy` TestRelayConnectionsHalfClosePreservesReverseTraffic（第十輪已知項）均為 `connection refused`。決定性實驗：純 Go stdlib 程式（不含任何專案程式碼）在本機 WSL 以 `net.Listen("tcp","127.0.0.1:0")` 後立即 `net.Dial` 重現 **1979/2000（98.9%）connection refused**；`.wslconfig` 確認 `networkingMode=virtioproxy`——Linux loopback 立即 dial 被 Windows 網路棧 RST（port 登記延遲），dial 前延遲越短越易失敗。第十輪 half-close「偶發 flaky」機制由此完全解釋。替代證明：三測試在 Windows `-count=1` 與 `-count=2` 全綠。環境結論：**本機 WSL 之立即 loopback dial 測試結果不可信，一律以 Windows 為準**。
+- 順帶品質修正：`gofmt -l` 揭露 3 個既有未格式化檔案（`internal/admin/http_test.go`、`internal/network/manager_test.go`、`internal/node/firewall_coordinator.go`，均為 struct 欄位/註解對齊偏差，歷輪僅檢查變更檔故未發現）。以 `gofmt -w` 機械修正（TDD 例外：純格式零行為差異；替代驗證＝全套 `gofmt -l internal cmd` 空輸出＋受影響三包測試全綠＋全套回歸）。
+- 驗證：WSL `-race -count=1`（RACE=0）、WSL `-race -count=2`（RACE=0，僅 3 個環境性失敗）；Windows `go test ./... -count=1 -timeout=300s` 15 packages 全綠、`-count=2` 全綠（測試冪等/隔離性）；`go vet ./...` 乾淨；全套 gofmt 乾淨；Linux amd64/arm64 `CGO_ENABLED=0` 交叉 build 成功。前端未動，web test/lint/build 未重跑。
+- 環境限制更新（取代第十三輪「無 cgo（-race 未跑）」）：本機 WSL 已具 gcc，`-race` 可執行且結果可信（競態偵測部分）；但 WSL `virtioproxy` 模式下立即 loopback dial 不可信。無 root/netns（integration 未跑）照舊。

@@ -237,3 +237,12 @@
 - 方法論升級：go test -coverprofile 找 0% 函式 → 發現 `pruneResources`（apply --prune 資源修剪）從未被測試 → 逐行審出缺陷 D1。
 - 修復 D1：apply --prune 刪「專用池節點＋池」時 pruneNodes 連帶清理專用池，pruneResources 用 apply 時快照對已消失池 DeletePool → 誤報 operation_failed 且中斷後續修剪；修復為刪除前以最新 Snapshot 檢查存在性，已消失跳過（冪等語意）。新增 statefulAgentResourceService/dedicatedPoolNodeService 測試 fakes 模擬真實 coordinator/manager 行為；RED 重現 operation_failed "resource pool prune failed"。
 - 驗證：go test ./... 15 packages、vet、gofmt 乾淨；Linux amd64/arm64 CGO=0 build 成功。提交：fix(admin)＋docs(agent)。
+
+## 2026-08-29 第十四輪操作記錄（自主疊代：穩定性定向巡察，-race 首跑）
+
+- 讀取：agent/question.md（§35 尾部、本輪新增 §36/§36.4）、internal/admin/control.go（Serve L87-115、handleConn L121-139）、internal/admin/control_test.go、C:/Users/yoyo2/.wslconfig（經 WSL 路徑）。
+- 執行（環境新發現：WSL 內 gcc 14.2.0 + go 1.25.0，歷輪「無 cgo」限制首次解除）：WSL `go test -race -count=1 ./...` 與 `-race -count=2 ./...` 兩輪全套，`WARNING: DATA RACE` 均為 0——13 輪靜態鎖紀律審查經機械驗證零競態。
+- 3 個測試失敗（admin TestControlServerCancellationStopsActiveAgentRequest、TestControlServerServesSecondConnectionWhileFirstIsBusy、proxy TestRelayConnectionsHalfClosePreservesReverseTraffic）全為 connection refused；決定性實驗：純 stdlib 程式於 WSL `net.Listen("tcp","127.0.0.1:0")` 後立即 `net.Dial` 2000 次中 1979 次 refused（98.9%）；`.wslconfig` `networkingMode=virtioproxy` 確診環境故障（Windows 網路棧對 Linux 立即 loopback dial 回 RST，port 登記延遲）。第十輪 half-close「偶發 flaky」機制由此完全解釋。結論：本機 WSL 立即 loopback dial 測試不可信，以 Windows 為準（三測試於 Windows -count=1/-count=2 全綠）。
+- 修改：gofmt -w 三個既有未格式化檔（internal/admin/http_test.go、internal/network/manager_test.go、internal/node/firewall_coordinator.go；純 struct 欄位/註解對齊，零行為差異）；治理檔 agent/question.md（§36 契約＋§36.4 完成紀錄）、agent/deep_todos.md、agent/memory.md（本節）。
+- 驗證：WSL -race 兩輪 RACE=0；Windows `go test ./... -count=1 -timeout=300s` 與 `-count=2` 全套 15 packages 全綠（冪等/隔離）；`go vet ./...` 乾淨；全套 `gofmt -l internal cmd` 清空；Linux amd64/arm64 CGO=0 交叉 build 成功；前端未動未重跑。
+- 未完整驗證：WSL virtioproxy 模式立即 loopback dial 不可信（本輪環境結論，取代第十輪單測試 flaky 定案）；無 root/netns（integration 未跑）；無 gopls。

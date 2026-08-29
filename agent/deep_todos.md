@@ -224,3 +224,13 @@
 - [x] 修復 D1（中）：apply `--prune` 同時刪「專用池節點＋其專用池」時，pruneNodes 連帶清理專用池後，pruneResources 拿舊快照對已消失池呼叫 DeletePool → "does not exist" → 誤報 operation_failed 並中斷後續修剪。修復：刪除前以最新 Snapshot 建存在集合，已消失視為意圖達成跳過。RED `TestAgentServiceApplyPruneToleratesPoolRemovedWithDedicatedNode`（stateful fake 模擬 coordinator 動態存在性＋manager 連帶清理）→ GREEN；場景 C 已有 preflightAgentNodeResources prune 防護確認。
 - [x] 歷輪殘留觀察項複查（四項定案不修）：空 active 池為不可達防禦分支（store 三路徑保證 len(Active)==Capacity≥1）；ReleaseEndpoints Close 失敗為 best-effort＋Allocate 實測 bind 兜底；非 CONNECT 轉送實與 CONNECT 共用同一 tunnelIdleTimeout（idle=0 為第七輪鎖定契約）；WaitAddressesReady 就緒確認需至少一次 dump 屬必要成本。
 - [x] 完整回歸：go test ./... 15 packages、vet、gofmt、Linux amd64/arm64 CGO=0 交叉 build 全過。環境限制照舊（無 root/netns、無 -race）；前端未動未重跑。
+
+## 2026-08-29 第十四輪：穩定性定向巡察（競態檢測首跑）
+
+- [x] 契約 §36：使用者澄清「無具體症狀、預防性巡察」；主軸為 WSL gcc 首跑全套 `go test -race`（第二至十三輪從未執行的最大動態驗證缺口）。
+- [x] WSL `-race -count=1` 與 `-race -count=2` 兩輪全套：`WARNING: DATA RACE` = 0，歷輪鎖紀律經機械驗證健全。
+- [x] 3 個測試失敗（admin×2＋proxy half-close）定案 WSL2 `virtioproxy` 環境故障：純 stdlib 重現 1979/2000（98.9%）connection refused；Windows `-count=1`/`-count=2` 全綠替代證明；第十輪 half-close flaky 機制完全解釋。
+- [x] Windows `-count=2` 全套 15 packages 全綠：測試冪等性/隔離性驗證通過。
+- [x] 品質修正：3 個既有 gofmt 未格式化檔案（admin/http_test.go、network/manager_test.go、node/firewall_coordinator.go）機械修正，全套 `gofmt -l` 清空（TDD 例外：純格式零行為差異，替代驗證＝gofmt 空輸出＋三包測試＋全套回歸）。
+- [x] 完整回歸：Windows全套、`go vet`、gofmt、Linux amd64/arm64 CGO=0 build 全過；前端未動未重跑。
+- [x] 環境限制更新：`-race` 已可於 WSL 執行且競態偵測可信；WSL 立即 loopback dial 測試不可信；無 root/netns 照舊。
