@@ -294,11 +294,11 @@ func TestHTTPServerMutationGuardAcceptsHTTPSSameHostOrigin(t *testing.T) {
 	}
 
 	rejected := []string{
-		"ftp://manager.example:34466",                 // scheme outside the allow list
-		"https://manager.example:34466.evil.example",  // host mismatch
-		"http://evil.example",                         // host mismatch
-		"null",                                        // unparseable / opaque origin
-		"",                                            // missing origin
+		"ftp://manager.example:34466",                // scheme outside the allow list
+		"https://manager.example:34466.evil.example", // host mismatch
+		"http://evil.example",                        // host mismatch
+		"null",                                       // unparseable / opaque origin
+		"",                                           // missing origin
 	}
 	for _, origin := range rejected {
 		if got := makeRequest(origin); got != http.StatusForbidden {

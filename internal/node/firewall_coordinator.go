@@ -57,8 +57,8 @@ func NewFirewallCoordinator(ctx context.Context, replacer FirewallRulesetReplace
 	}
 	coordinator := &FirewallCoordinator{
 		replacer: replacer, management: normalized,
-		nodes:       make(map[string][]proxy.BindEndpoint),
-		relayScopes: make(map[relayScope]int),
+		nodes:        make(map[string][]proxy.BindEndpoint),
+		relayScopes:  make(map[relayScope]int),
 		relayPortMin: relayPortMin, relayPortMax: relayPortMax,
 	}
 	if err := replacer.Replace(ctx, coordinator.openings(normalized, coordinator.nodes, coordinator.relayScopes)); err != nil {

@@ -13,29 +13,29 @@ import (
 )
 
 type fakeKernel struct {
-	mu                sync.Mutex
-	addresses         map[AddressRef]bool
-	routes            map[RouteRef]bool
-	dadErrors         map[AddressRef]error
-	waitForCancel     map[AddressRef]bool
-	bindErrors        map[AddressRef]error
-	removeAddrError   map[AddressRef]error
-	removeRouteErr    map[RouteRef]error
-	addAddresses      []AddressRef
-	removeAddresses   []AddressRef
-	addRoutes         []RouteRef
-	removeRoutes      []RouteRef
-	waitStarted       chan AddressRef
-	waitGate          <-chan struct{}
-	operations        *[]string
-	existsCalls       int
-	interfaceAddrs    map[string][]netip.Addr
-	interfaceAddrErr  error
-	waitBatchErr      error
+	mu                 sync.Mutex
+	addresses          map[AddressRef]bool
+	routes             map[RouteRef]bool
+	dadErrors          map[AddressRef]error
+	waitForCancel      map[AddressRef]bool
+	bindErrors         map[AddressRef]error
+	removeAddrError    map[AddressRef]error
+	removeRouteErr     map[RouteRef]error
+	addAddresses       []AddressRef
+	removeAddresses    []AddressRef
+	addRoutes          []RouteRef
+	removeRoutes       []RouteRef
+	waitStarted        chan AddressRef
+	waitGate           <-chan struct{}
+	operations         *[]string
+	existsCalls        int
+	interfaceAddrs     map[string][]netip.Addr
+	interfaceAddrErr   error
+	waitBatchErr       error
 	interfaceAddrCalls int
-	waitReadyCalls    int
-	waitBatchCalls    int
-	waitBatchRefs     []AddressRef
+	waitReadyCalls     int
+	waitBatchCalls     int
+	waitBatchRefs      []AddressRef
 }
 
 func (f *fakeKernel) callCounts() (exists, interfaceAddrs, waitReady, waitBatch int) {
