@@ -222,4 +222,5 @@
 - [x] 基線全綠（15 packages＋vet）。深挖結論：ipv6resource（template/random/store/state/state_store 逐行——引用計數、邊界、原子寫全穩健）、auth（session/limiter＋登入鏈）、app paths/policy_provider/management、admin frontend、agent_commands.go（704 行確認矩陣/錯誤映射/凍結快照模式）——均無新缺陷。
 - [x] 覆蓋率掃描發現 `pruneResources` 0.0%（apply --prune 資源修剪自 2026-08-24 以來零測試覆蓋）→ 逐行深挖發現缺陷 D1。
 - [x] 修復 D1（中）：apply `--prune` 同時刪「專用池節點＋其專用池」時，pruneNodes 連帶清理專用池後，pruneResources 拿舊快照對已消失池呼叫 DeletePool → "does not exist" → 誤報 operation_failed 並中斷後續修剪。修復：刪除前以最新 Snapshot 建存在集合，已消失視為意圖達成跳過。RED `TestAgentServiceApplyPruneToleratesPoolRemovedWithDedicatedNode`（stateful fake 模擬 coordinator 動態存在性＋manager 連帶清理）→ GREEN；場景 C 已有 preflightAgentNodeResources prune 防護確認。
+- [x] 歷輪殘留觀察項複查（四項定案不修）：空 active 池為不可達防禦分支（store 三路徑保證 len(Active)==Capacity≥1）；ReleaseEndpoints Close 失敗為 best-effort＋Allocate 實測 bind 兜底；非 CONNECT 轉送實與 CONNECT 共用同一 tunnelIdleTimeout（idle=0 為第七輪鎖定契約）；WaitAddressesReady 就緒確認需至少一次 dump 屬必要成本。
 - [x] 完整回歸：go test ./... 15 packages、vet、gofmt、Linux amd64/arm64 CGO=0 交叉 build 全過。環境限制照舊（無 root/netns、無 -race）；前端未動未重跑。
