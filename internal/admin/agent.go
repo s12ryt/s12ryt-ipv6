@@ -550,6 +550,15 @@ func (s *AgentService) pruneResources(ctx context.Context, desired agentResource
 	for _, item := range desired.Templates {
 		keepTemplates[item.Name] = struct{}{}
 	}
+	// Deleting a node also removes its dedicated outbound pool, so the
+	// apply-time snapshot may list pools that no longer exist. Treat pools
+	// absent from the live snapshot as already pruned instead of failing.
+	livePools := make(map[string]struct{})
+	for _, item := range s.resources.Snapshot().Pools {
+		if item != nil {
+			livePools[item.Name] = struct{}{}
+		}
+	}
 	pools := append([]*ipv6resource.Pool(nil), current.Pools...)
 	sort.Slice(pools, func(i, j int) bool { return pools[i] != nil && (pools[j] == nil || pools[i].Name < pools[j].Name) })
 	for _, item := range pools {
@@ -557,6 +566,9 @@ func (s *AgentService) pruneResources(ctx context.Context, desired agentResource
 			continue
 		}
 		if _, exists := keepPools[item.Name]; exists {
+			continue
+		}
+		if _, exists := livePools[item.Name]; !exists {
 			continue
 		}
 		if err := s.resources.DeletePool(ctx, item.Name); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -452,6 +453,115 @@ func TestAgentServiceApplyPruneProtectsResourcesUsedByRetainedNodes(t *testing.T
 	})
 	if response["ok"] != false || agentErrorCode(t, response) != "invalid_document" || settings.replaceCount != 0 || resources.poolName != "" || resources.template.Name != "" {
 		t.Fatalf("response=%#v replacements=%d resources=%#v", response, settings.replaceCount, resources)
+	}
+}
+
+// statefulAgentResourceService 模擬真實 ResourceCoordinator 的動態存在性：
+// 已移除的池從快照消失，對它們呼叫 DeletePool 回與 ipv6resource.Store 相同的
+// "does not exist" 錯誤。
+type statefulAgentResourceService struct {
+	fakeResourceService
+	removedPools map[string]struct{}
+}
+
+func (s *statefulAgentResourceService) Snapshot() ResourceSnapshot {
+	snapshot := s.fakeResourceService.Snapshot()
+	pools := make([]*ipv6resource.Pool, 0, len(snapshot.Pools))
+	for _, pool := range snapshot.Pools {
+		if _, removed := s.removedPools[pool.Name]; removed {
+			continue
+		}
+		pools = append(pools, pool)
+	}
+	snapshot.Pools = pools
+	return snapshot
+}
+
+func (s *statefulAgentResourceService) DeletePool(_ context.Context, name string) error {
+	if _, removed := s.removedPools[name]; removed {
+		return fmt.Errorf("pool %q does not exist", name)
+	}
+	return s.fakeResourceService.DeletePool(context.Background(), name)
+}
+
+// dedicatedPoolNodeService 模擬 production node.Manager.Delete：刪除節點後
+// 連帶清理該節點的專用出站池。
+type dedicatedPoolNodeService struct {
+	fakeNodeService
+	deleteHook func(id string)
+}
+
+func (s *dedicatedPoolNodeService) Delete(ctx context.Context, id string) error {
+	if err := s.fakeNodeService.Delete(ctx, id); err != nil {
+		return err
+	}
+	if s.deleteHook != nil {
+		s.deleteHook(id)
+	}
+	return nil
+}
+
+func TestAgentServiceApplyPruneToleratesPoolRemovedWithDedicatedNode(t *testing.T) {
+	template, err := ipv6resource.NewPrefixTemplate("edge", "2001:4860:1::/120", "eth0", ipv6resource.ModeAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resources := &statefulAgentResourceService{
+		fakeResourceService: fakeResourceService{snapshot: ResourceSnapshot{
+			Templates: []ipv6resource.PrefixTemplate{template},
+			Pools: []*ipv6resource.Pool{
+				{Name: "node-1-outbound", Kind: ipv6resource.PoolDedicatedOutbound, Template: "edge", Capacity: 2},
+				{Name: "shared-out", Kind: ipv6resource.PoolSharedOutbound, Template: "edge", Capacity: 2},
+			},
+		}},
+		removedPools: make(map[string]struct{}),
+	}
+	configuration := validAdminNodeConfig("node-1", "one")
+	configuration.Outbound = "node-1-outbound"
+	configuration.DedicatedPool = "node-1-outbound"
+	nodes := &dedicatedPoolNodeService{fakeNodeService: fakeNodeService{nodes: map[string]node.Node{
+		"node-1": {Config: configuration, Status: node.StatusRunning},
+	}}}
+	nodes.deleteHook = func(string) {
+		resources.removedPools["node-1-outbound"] = struct{}{}
+	}
+	settings := &fakeAgentSettingsStore{current: config.Default()}
+	service, err := NewAgentService(AgentServiceOptions{
+		Settings: settings, ActiveSettings: settings.Snapshot(), Resources: resources,
+		Nodes: nodes, Operations: &fakeOperationsService{},
+		Health: func() HealthState { return HealthHealthy },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := callAgent(t, service, map[string]any{
+		"command": "apply", "prune": true, "yes": true,
+		"input": map[string]any{
+			"schema_version": 1,
+			"resources": map[string]any{
+				"templates": []any{map[string]any{"name": "edge", "prefix": "2001:4860:1::/120", "interface": "eth0", "mode": "address"}},
+				"pools":     []any{map[string]any{"name": "shared-out", "kind": "shared-outbound", "template": "edge", "capacity": 2}},
+			},
+			"nodes": []any{},
+		},
+	})
+	if response["ok"] != true {
+		t.Fatalf("apply prune response = %#v", response)
+	}
+	data := response["data"].(map[string]any)
+	completed, _ := data["completed"].([]any)
+	foundNodeDelete := false
+	for _, item := range completed {
+		if item == "nodes.delete.node-1" {
+			foundNodeDelete = true
+		}
+	}
+	if !foundNodeDelete {
+		t.Fatalf("completed items missing node deletion: %#v", completed)
+	}
+	if resources.poolName == "shared-out" {
+		t.Fatal("retained pool was deleted by prune")
 	}
 }
 
