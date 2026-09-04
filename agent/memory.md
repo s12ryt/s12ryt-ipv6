@@ -246,3 +246,12 @@
 - 修改：gofmt -w 三個既有未格式化檔（internal/admin/http_test.go、internal/network/manager_test.go、internal/node/firewall_coordinator.go；純 struct 欄位/註解對齊，零行為差異）；治理檔 agent/question.md（§36 契約＋§36.4 完成紀錄）、agent/deep_todos.md、agent/memory.md（本節）。
 - 驗證：WSL -race 兩輪 RACE=0；Windows `go test ./... -count=1 -timeout=300s` 與 `-count=2` 全套 15 packages 全綠（冪等/隔離）；`go vet ./...` 乾淨；全套 `gofmt -l internal cmd` 清空；Linux amd64/arm64 CGO=0 交叉 build 成功；前端未動未重跑。
 - 未完整驗證：WSL virtioproxy 模式立即 loopback dial 不可信（本輪環境結論，取代第十輪單測試 flaky 定案）；無 root/netns（integration 未跑）；無 gopls。
+
+## 2026-09-04 第十五輪操作記錄（自主疊代：長流量後資料面停服）
+
+- 使用者回報 2C4G VPS 每次約 60 GB 後代理停服但 Web 可開，並授權不追問自主修復；需求、範圍與驗收先寫入 `agent/question.md` §37。
+- 讀取/審查：`internal/node/runtime.go` 與測試；`internal/proxy` 的 dialer/source_pool/http_proxy/socks5_proxy/udp_relay/port_allocator；`internal/stats/registry.go`、`internal/app/traffic_observer.go`；Go 1.25 `net/http.Server.Serve` temporary Accept 退避策略；治理三檔。結論：60 GB 不構成現有整數溢位，TCP/UDP/lease/goroutine/FD 回收未見第二項確定缺陷。
+- 修改：`internal/node/runtime.go` 的 accept loop 對 temporary `net.Error` 以 5 ms→1 s 指數退避重試、成功重設、runtime context 可立即中斷；永久/closed 錯誤維持退出。`internal/node/runtime_test.go` 的 queue listener 增加錯誤注入，新增暫時錯誤復原、停止中斷退避、永久錯誤不重試三測試。`agent/question.md`、`agent/deep_todos.md`、`agent/memory.md` 更新；架構與依賴不變，`agent/項目表.md` 無需更新。
+- TDD：鄰近基線 `go test ./internal/node -count=1` 全綠；RED `TestListenerRuntimeRetriesTemporaryAcceptError` 修復前 250 ms timeout；GREEN 後通過，三個目標/邊界測試 `-count=5` 全綠。鄰近 node/proxy/stats `-count=5` 全綠。
+- 完整驗證：Windows `go test ./... -count=1 -timeout=300s` 15 packages、`go vet ./...`、全部追蹤 Go 檔 gofmt；web 13 files/73 tests、ESLint；Linux amd64/arm64 CGO=0 build，全數通過。WSL race：node/stats 通過；proxy 只有既知 virtioproxy loopback connection refused。Windows race 因缺 gcc無法建置；LSP 因缺 gopls 未執行。
+- 未完整驗證：無真實 VPS 60 GB 長壓、2C4G 資源限制與 root/netns 暫時 errno 壓力環境；本輪修復的是與症狀一致且可決定性重現的 accept-loop 永久退出機制，需部署後觀察實際長流量結果。

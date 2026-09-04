@@ -234,3 +234,13 @@
 - [x] 品質修正：3 個既有 gofmt 未格式化檔案（admin/http_test.go、network/manager_test.go、node/firewall_coordinator.go）機械修正，全套 `gofmt -l` 清空（TDD 例外：純格式零行為差異，替代驗證＝gofmt 空輸出＋三包測試＋全套回歸）。
 - [x] 完整回歸：Windows全套、`go vet`、gofmt、Linux amd64/arm64 CGO=0 build 全過；前端未動未重跑。
 - [x] 環境限制更新：`-race` 已可於 WSL 執行且競態偵測可信；WSL 立即 loopback dial 測試不可信；無 root/netns 照舊。
+
+## 2026-09-04 第十五輪：長流量後代理資料面停服修復
+
+- [x] 契約 §37：依使用者授權自主調查「2C4G VPS 約 60 GB 後代理掛、Web 仍可開」；以資料面 listener、資源生命週期與計數累積為最小範圍，不建立流量配額、不改控制面。
+- [x] 根因級缺陷：`listenerRuntime.accept` 對任何 Accept 錯誤直接永久退出；暫時性 Linux socket/FD 壓力可使代理不再接新連線，而管理 Web 獨立存活。
+- [x] RED：`TestListenerRuntimeRetriesTemporaryAcceptError` 由 Runtime 公開行為注入首次暫時 Accept 錯誤，舊碼於 250 ms 超時，穩定重現後續連線永不 dispatch。
+- [x] GREEN：暫時錯誤採 5 ms 起始、倍增至 1 s 的有界可中斷退避；成功 Accept 重設，永久/closed 錯誤退出。停止中斷退避與永久錯誤邊界測試加入後，三測試 `-count=5` 全綠。
+- [x] 稽核 TCP/HTTP/SOCKS、UDP association/mapping、source lease、FD/goroutine 與 stats；釋放路徑完整，`int64`/`uint64` 在 60 GB 不溢位，無第二項可證實缺陷。
+- [x] 回歸：鄰近三包 `-count=5`、Windows 全套 15 packages、vet、全套 gofmt、web 73 tests/lint、Linux amd64/arm64 build 全過；WSL race 的 node/stats 全過，proxy 僅既知 virtioproxy loopback 環境失敗。
+- [x] 未完整驗證：無真實 2C4G/60 GB 長壓及 root/netns errno 壓力測試；Windows race 缺 gcc、LSP 缺 gopls。部署後需持續觀察實際流量門檻。
