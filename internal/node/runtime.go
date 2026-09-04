@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/s12ryt/s12ryt-ipv6/internal/proxy"
 )
@@ -254,11 +255,34 @@ func (r *listenerRuntime) Stop(ctx context.Context) error {
 
 func (r *listenerRuntime) accept(listener net.Listener, endpoint proxy.BindEndpoint) {
 	defer r.wg.Done()
+	var tempDelay time.Duration
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			return
+			var netErr net.Error
+			if !errors.As(err, &netErr) || !netErr.Temporary() {
+				return
+			}
+			if tempDelay == 0 {
+				tempDelay = 5 * time.Millisecond
+			} else {
+				tempDelay *= 2
+			}
+			if tempDelay > time.Second {
+				tempDelay = time.Second
+			}
+			timer := time.NewTimer(tempDelay)
+			select {
+			case <-timer.C:
+			case <-r.ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return
+			}
+			continue
 		}
+		tempDelay = 0
 		r.mu.Lock()
 		if r.stopping {
 			r.mu.Unlock()

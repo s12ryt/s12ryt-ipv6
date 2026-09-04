@@ -20,18 +20,26 @@ import (
 type queueListener struct {
 	endpoint proxy.BindEndpoint
 	incoming chan net.Conn
+	errors   chan error
 	closed   chan struct{}
 	once     sync.Once
 }
 
 func newQueueListener(endpoint proxy.BindEndpoint) *queueListener {
-	return &queueListener{endpoint: endpoint, incoming: make(chan net.Conn, 8), closed: make(chan struct{})}
+	return &queueListener{
+		endpoint: endpoint,
+		incoming: make(chan net.Conn, 8),
+		errors:   make(chan error),
+		closed:   make(chan struct{}),
+	}
 }
 
 func (l *queueListener) Accept() (net.Conn, error) {
 	select {
 	case conn := <-l.incoming:
 		return conn, nil
+	case err := <-l.errors:
+		return nil, err
 	case <-l.closed:
 		return nil, net.ErrClosed
 	}
@@ -190,6 +198,110 @@ func (h *panicOnceHandler) ServeConn(_ context.Context, conn net.Conn) (proxy.Pr
 	h.onceE.Do(func() { close(h.entered) })
 	_, err := conn.Read(make([]byte, 1))
 	return proxy.ProxyTraffic{Protocol: "socks"}, err
+}
+
+type temporaryAcceptError struct{}
+
+func (temporaryAcceptError) Error() string   { return "temporary accept failure" }
+func (temporaryAcceptError) Timeout() bool   { return false }
+func (temporaryAcceptError) Temporary() bool { return true }
+
+func TestListenerRuntimeRetriesTemporaryAcceptError(t *testing.T) {
+	binder := &listenerBinder{}
+	allocator, err := proxy.NewPortAllocator(52000, 52000, binder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := &readBlockingHandler{entered: make(chan struct{})}
+	factory, err := NewListenerRuntimeFactory(ListenerRuntimeOptions{
+		Allocator: allocator,
+		Handlers:  &staticHandlerBuilder{handler: handler},
+		Firewall:  &fakeNodeFirewall{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := factory.Start(context.Background(), runtimeConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = runtime.Stop(context.Background()) }()
+
+	binder.listeners[0].errors <- temporaryAcceptError{}
+	client, server := net.Pipe()
+	defer client.Close()
+	binder.listeners[0].incoming <- server
+
+	select {
+	case <-handler.entered:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("runtime stopped accepting connections after a temporary accept error")
+	}
+}
+
+func TestListenerRuntimeStopInterruptsTemporaryAcceptBackoff(t *testing.T) {
+	binder := &listenerBinder{}
+	allocator, err := proxy.NewPortAllocator(52000, 52000, binder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	factory, err := NewListenerRuntimeFactory(ListenerRuntimeOptions{
+		Allocator: allocator,
+		Handlers:  &staticHandlerBuilder{handler: &readBlockingHandler{entered: make(chan struct{})}},
+		Firewall:  &fakeNodeFirewall{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := factory.Start(context.Background(), runtimeConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for range 6 {
+		binder.listeners[0].errors <- temporaryAcceptError{}
+	}
+	started := time.Now()
+	if err := runtime.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed >= 100*time.Millisecond {
+		t.Fatalf("runtime stop waited for temporary accept backoff: %s", elapsed)
+	}
+}
+
+func TestListenerRuntimeDoesNotRetryPermanentAcceptError(t *testing.T) {
+	binder := &listenerBinder{}
+	allocator, err := proxy.NewPortAllocator(52000, 52000, binder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := &readBlockingHandler{entered: make(chan struct{})}
+	factory, err := NewListenerRuntimeFactory(ListenerRuntimeOptions{
+		Allocator: allocator,
+		Handlers:  &staticHandlerBuilder{handler: handler},
+		Firewall:  &fakeNodeFirewall{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := factory.Start(context.Background(), runtimeConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = runtime.Stop(context.Background()) }()
+
+	binder.listeners[0].errors <- errors.New("permanent accept failure")
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	binder.listeners[0].incoming <- server
+
+	select {
+	case <-handler.entered:
+		t.Fatal("runtime retried a permanent accept error")
+	case <-time.After(50 * time.Millisecond):
+	}
 }
 
 func TestListenerRuntimeSurvivesHandlerPanic(t *testing.T) {
