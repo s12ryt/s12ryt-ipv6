@@ -675,3 +675,39 @@ TDD 證據：
 - 順帶品質修正：`gofmt -l` 揭露 3 個既有未格式化檔案（`internal/admin/http_test.go`、`internal/network/manager_test.go`、`internal/node/firewall_coordinator.go`，均為 struct 欄位/註解對齊偏差，歷輪僅檢查變更檔故未發現）。以 `gofmt -w` 機械修正（TDD 例外：純格式零行為差異；替代驗證＝全套 `gofmt -l internal cmd` 空輸出＋受影響三包測試全綠＋全套回歸）。
 - 驗證：WSL `-race -count=1`（RACE=0）、WSL `-race -count=2`（RACE=0，僅 3 個環境性失敗）；Windows `go test ./... -count=1 -timeout=300s` 15 packages 全綠、`-count=2` 全綠（測試冪等/隔離性）；`go vet ./...` 乾淨；全套 gofmt 乾淨；Linux amd64/arm64 `CGO_ENABLED=0` 交叉 build 成功。前端未動，web test/lint/build 未重跑。
 - 環境限制更新（取代第十三輪「無 cgo（-race 未跑）」）：本機 WSL 已具 gcc，`-race` 可執行且結果可信（競態偵測部分）；但 WSL `virtioproxy` 模式下立即 loopback dial 不可信。無 root/netns（integration 未跑）照舊。
+
+## 37. 第十五輪自主疊代：長流量後代理資料面停服
+
+更新日期：2026-09-04
+狀態：使用者回報「2C4G VPS 每次跑約 60 GB 流量後程式就掛，但 Web 仍可開」，並明確要求不追問、由 Agent 自主調查及修復。本節為本輪實作與驗收契約；未明示技術細節依既有架構、相容性、風險與維護成本採最小折衷方案。
+
+### 37.1 可觀察故障與調查範圍
+
+- 「掛」依症狀最小解讀為：程序與管理 Web 仍存活，但一個或多個代理 TCP listener 不再接受新連線；不得以重啟整個服務作為修復。
+- 優先調查資料面與控制面生命週期差異：listener accept loop、暫時性作業系統錯誤、連線/goroutine/FD/source lease 釋放、UDP mapping 回收與流量統計累積。
+- 60 GB 視為長時間高負載的觸發線索，不建立或變更流量配額；`uint64` 統計與 `int64` 單連線流量在此量級不構成溢位。
+- 不擴張至管理 control socket、Web 功能、schema、部署介面或 B4 ResourceCoordinator 結構重構，除非出現直接且可重現的因果證據。
+
+### 37.2 修復契約
+
+- 節點 TCP listener 遇到實作 `net.Error` 且 `Temporary() == true` 的 Accept 錯誤時，不得永久退出；採有界指數退避後重試，避免資源耗盡期間忙迴圈。
+- 退避初值 5 ms，每次連續暫時錯誤加倍，最高 1 s；任一次成功 Accept 後重設退避。此語意比照 Go `net/http.Server.Serve` 的既有穩定策略。
+- runtime 停止或 listener 關閉時必須立即中斷退避並退出；`net.ErrClosed` 及其他非暫時錯誤不得無限重試。
+- 維持現有節點連線上限、事件、handler panic 隔離、binding refresh/drain、Stop 冪等與錯誤語意；不新增 public API。
+
+### 37.3 TDD 與驗收標準
+
+- RED：由 `ListenerRuntimeFactory.Start` 的公開行為注入「第一次 Accept 暫時失敗、後續有正常連線」；修復前應因 listener goroutine 已退出而無法 dispatch 後續連線。
+- GREEN：同一 listener 在暫時錯誤後可接受並處理後續連線；目標與 `internal/node` 鄰近測試全通過。
+- 邊界：連續暫時錯誤期間呼叫 `Stop` 必須快速完成，不得等待最高 1 s 退避；fatal/closed 錯誤維持停止且不忙迴圈。
+- 完成資料面資源生命週期靜態審查；若發現第二項可證明缺陷，另開 RED → GREEN → REFACTOR，不做無證據改動。
+- 回歸門檻：`go test ./... -count=1 -timeout=300s`、`go vet ./...`、全套 gofmt 檢查、Linux amd64/arm64 `CGO_ENABLED=0` 交叉 build；可用時執行 race。前端未改則不要求重建 `web/dist`。
+- 本機無法等價重現真實 VPS 的 60 GB、2C4G、Linux FD 壓力與外部網路條件；以決定性 Accept fault injection 證明已確認故障機制，並在完成報告保留真實環境長壓測風險。
+
+### 37.4 完成紀錄（2026-09-04）
+
+- **確認並修復與症狀一致的高嚴重度資料面缺陷**：節點 `listenerRuntime.accept` 原先對任何 `Accept` 錯誤直接退出；長時間高負載下若 Linux 回傳暫時性 socket/FD 錯誤，該代理 listener goroutine 會永久消失，但獨立的管理 Web server 仍存活。修復後只對 `net.Error.Temporary()` 採 5 ms 起始、倍增至最高 1 s 的可中斷退避重試；成功 Accept 重設退避，永久錯誤與 listener 關閉仍立即退出。
+- **RED → GREEN**：`TestListenerRuntimeRetriesTemporaryAcceptError` 修復前於 250 ms 超時並回報「runtime stopped accepting connections after a temporary accept error」；修復後通過。另以 `TestListenerRuntimeStopInterruptsTemporaryAcceptBackoff` 與 `TestListenerRuntimeDoesNotRetryPermanentAcceptError` 鎖定停止可中斷退避及永久錯誤不重試，三測試 `-count=5` 全綠。
+- **資源生命週期稽核**：逐條審查 TCP/HTTP/SOCKS relay、UDP association/mapping、來源位址 lease、連線關閉與 stats 累積。所有成功/失敗/排空路徑皆有 Close/Release 或既有回收機制；60 GB 遠低於 `int64`/`uint64` 上限，未發現第二項可證實缺陷，故未做無證據改動。
+- 驗證：`internal/node`、`internal/proxy`、`internal/stats` `-count=5` 全綠；Windows `go test ./... -count=1 -timeout=300s` 15 packages 全綠；`go vet ./...`、全部追蹤 Go 檔 gofmt、web 13 files/73 tests、ESLint 全綠；Linux amd64/arm64 `CGO_ENABLED=0` 交叉 build 成功。WSL `-race` 的 `internal/node` 與 `internal/stats` 通過；`internal/proxy` 僅既知 `virtioproxy` loopback `connection refused` 失敗，Windows 對應包五輪全綠。Windows `-race` 因缺少 gcc 無法建置；`gopls` 未安裝，LSP 診斷未執行。
+- 未完整驗證：沒有可用的真實 2C4G VPS 進行 60 GB 長壓，也未在 root network namespace 模擬 Linux `EMFILE`/`ENFILE` 等真實 errno；本輪證明的是可決定性重現且完全符合「代理停服、Web 存活」症狀的故障機制與復原行為，部署後仍需以實際長流量觀察確認完整因果鏈。
