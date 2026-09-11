@@ -254,3 +254,5 @@
 - [x] 契約 §38 寫入 agent/question.md（含「不洩上游細節→記錄真實錯誤依賴 redact」決策、VPS 下次崩潰診斷指令：/proc fd 計數、limits、ip -6 addr show）。
 - [x] 回歸：`go test ./... -count=1` 15 packages 全綠、`go vet ./...` 乾淨；前端未動未重跑。
 - [x] 未完整驗證：無 VPS 崩潰現場 FD/limits 數據，根因（EMFILE/源地址移除/DoT）未終裁；本輪修復診斷能力與已知部署缺陷，待下次崩潰以新錯誤分類終裁。
+- [x] 使用者 9/11 20:17 第二次崩潰數據：本次運行記憶體峰值僅 101.6M（排除記憶體因素）；20:18:00 重啟後 1.7s 內兩條 component.degraded（疑似 service 啟動路徑 reconcile/restore 失敗，可能指向根因 B 地址配置）；events 仍寫死錯誤（VPS 跑舊版）。據此發現並修復 O3：production_build.go report() 寫死 Error 丟棄 component/cause，改為 componentDegradedMessage()（"component degraded: " + component + ": " + truncateErrorDetail 截斷）。RED：TestComponentDegradedMessageIncludesComponentAndCause／TruncatesLongCause／TestBuildProductionRecordsComponentAndCauseInDegradedEvent（覆寫 productionTestPlatform.hostAddresses 觸發 degraded，corrupt 檔案場景不觸發 report 已改棄）；GREEN：15 packages 全綠、vet/gofmt 乾淨。
+- [ ] 待辦：發新 Release（含 O1+F1+O3）升級 VPS；升級後讀 Web 總覽 Issues／`agent status` 的 degraded 細節，並於下次崩潰蒐集 /proc FD 計數、limits、`ip -6 addr show` 以終裁根因 A/B/C。

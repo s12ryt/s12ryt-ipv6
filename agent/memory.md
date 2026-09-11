@@ -264,3 +264,11 @@
 - 驗證：`go test ./internal/app/ -run TestTrafficObserver` 全綠；`go test ./... -count=1` 15 packages 全綠；`go vet ./...` 乾淨（EXIT=0）。前端未動未重跑。gofmt/交叉 build 未跑（syscall 常數於 Windows/Linux 各自平台一致，測試跨平台安全）。
 - 部署注意：F1 需重裝 unit（install.sh 或手動 daemon-reload+restart）才生效；下次崩潰時蒐集 /proc FD 計數、limits、ip -6 addr show 以終裁根因。
 - 未完整驗證：無 VPS 崩潰現場數據，EMFILE/源地址移除/DoT 三候選根因未終裁；本輪修復診斷能力（O1）與已知部署缺陷（F1）。
+
+## 2026-09-11 第十六輪（續）：O3 component.degraded 觀測性修復
+
+- 讀取：internal/app/production_build.go（report 閉包 L135-149、呼叫點 L155/214/221-223/251/476）、production_build_test.go（productionTestPlatform 工廠 L118-133、既有 corrupt 測試）、agent/question.md §38、agent/deep_todos.md 尾部
+- 編輯：internal/app/production_build_test.go（import strings；新增 TestComponentDegradedMessageIncludesComponentAndCause、TestComponentDegradedMessageTruncatesLongCause、TestBuildProductionRecordsComponentAndCauseInDegradedEvent——後者初版用 corrupt 檔案場景失敗，改為覆寫 platform.hostAddresses 回錯誤後通過）；internal/app/production_build.go（新增 componentDegradedMessage 純函數；report() Error 改用它）
+- 驗證：目標 3 測試 PASS；go test ./... -count=1 15 packages 全綠；go vet 乾淨；gofmt -l internal/app 空
+- 治理：question.md §38.2 補 O3 契約；deep_todos.md 第十六輪補 O3 條目與待辦（發 Release、終裁根因）；本檔記錄
+- 教訓：corrupt resources/nodes 在 store 建立階段就被容忍，不會走到 report()；整合測試 degraded 事件應以 platform.hostAddresses 覆寫觸發（L221 RefreshHostAddresses 失敗路徑）

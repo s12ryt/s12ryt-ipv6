@@ -728,6 +728,7 @@ TDD 證據：
 
 - **O1**：`write()` 於 dial/association 失敗時記錄 `failure + ": " + describeDialError(err)`；分類（errors.Is/As 遞迴）為穩定標籤：EMFILE/ENFILE→"fd limit reached"、EADDRNOTAVAIL→"source address unavailable"、EACCES/EPERM→"permission denied"、ECONNREFUSED→"connection refused"、ENETUNREACH→"network unreachable"、EHOSTUNREACH→"host unreachable"、ETIMEDOUT→"connection timed out"、ECONNRESET→"connection reset"、context.DeadlineExceeded/os.ErrDeadlineExceeded→"deadline exceeded"、net.DNSError→"dns lookup not found/timeout/temporary failure/failed"（**不含查詢名稱**）；未知錯誤 fallback 為 err.Error() 截 200 bytes（rune-safe）+"..."。不新增 Event 欄位（向後相容：web 前端顯示 error 字串不變語意）；秘密保護依賴 eventlog 既有 redact()（RegisterSecret 的值在寫檔時替換為 [REDACTED]）。Rejected 分支（connection limit reached）訊息已完整，不附加分類。
 - **F1**：systemd unit [Service] 加 `LimitNOFILE=1048576`，消除 systemd 預設 1024 soft limit 對高併發代理的 EMFILE 風險。
+- **O3**（9/11 第二次崩潰數據後追加）：`internal/app/production_build.go` 的 `report()` 閉包把 component.degraded 事件 Error 寫死為 "component degraded"，丟棄 component 與 cause（與 O1 同型觀測性黑洞；呼叫點：traffic-log、host-addresses×2、resource-drain、service）。修復為 `componentDegradedMessage(component, cause)` ＝ `"component degraded: " + component + ": " + truncateErrorDetail(cause.Error())`（同 package 既有 200 bytes rune-safe 截斷+"..."）；component 為內部常數無敏感性，秘密保護仍依賴 eventlog redact()；`"component degraded: "` 前綴維持，web 向後相容。
 
 ### 38.3 TDD 與驗收
 
