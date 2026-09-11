@@ -255,3 +255,12 @@
 - TDD：鄰近基線 `go test ./internal/node -count=1` 全綠；RED `TestListenerRuntimeRetriesTemporaryAcceptError` 修復前 250 ms timeout；GREEN 後通過，三個目標/邊界測試 `-count=5` 全綠。鄰近 node/proxy/stats `-count=5` 全綠。
 - 完整驗證：Windows `go test ./... -count=1 -timeout=300s` 15 packages、`go vet ./...`、全部追蹤 Go 檔 gofmt；web 13 files/73 tests、ESLint；Linux amd64/arm64 CGO=0 build，全數通過。WSL race：node/stats 通過；proxy 只有既知 virtioproxy loopback connection refused。Windows race 因缺 gcc無法建置；LSP 因缺 gopls 未執行。
 - 未完整驗證：無真實 VPS 60 GB 長壓、2C4G 資源限制與 root/netns 暫時 errno 壓力環境；本輪修復的是與症狀一致且可決定性重現的 accept-loop 永久退出機制，需部署後觀察實際長流量結果。
+
+## 2026-09-11 第十六輪操作記錄（v0.1.9 出站全失敗：O1 觀測性＋F1 LimitNOFILE）
+
+- 使用者回報 v0.1.9 升級後再崩（新連線/既有/UDP 全掛、Web running、重啟恢復）；events.jsonl 大量 `connection.closed success:false error:"proxy connection failed"` 無 destination/outbound；journal 無 panic。RCA 讀取：internal/app/traffic_observer.go（全文 81 行）、deploy/systemd/s12ryt-ipv6.service（27 行）、internal/eventlog/logger.go（389 行，確認 redact()/RegisterSecret 機制）；資源生命週期審計結論沿用第十五輪（無明確洩漏）。使用者授權「F1 + O1 都修」。
+- 修改：`internal/app/traffic_observer.go`（write() 增 classify 參數；新增 describeDialError＋truncateErrorDetail；imports 增 context/net/os/syscall/unicode/utf8）；`internal/app/traffic_observer_test.go`（imports 增 fmt；既有斷言演進為含真實錯誤；新增 TestTrafficObserverRecordsRealDialErrorClassification 10 cases＋TestTrafficObserverRecordsUDPAssociationErrorClassification）；`deploy/systemd/s12ryt-ipv6.service`（LimitNOFILE=1048576＋註解）；治理三檔（question.md §38、deep_todos.md 第十六輪、memory.md 本節）。
+- TDD 過程：RED＝11 cases 全失敗於寫死 "proxy connection failed"/"proxy association failed"；GREEN 迭代 3 次——(1) 測試檔補 fmt import（m0028 遺漏）；(2) 統計測試斷言 `!tcp.Success` 寫反修正為 `tcp.Success`（帶 error 事件 Success=false 為正確行為）；(3) rejected 分支被誤附加分類（"connection limit reached: node TCP connection limit reached"）→ write() 加 classify 參數，TCPClosed/UDPClosed 傳 true、Rejected 傳 false。GREEN 全過。
+- 驗證：`go test ./internal/app/ -run TestTrafficObserver` 全綠；`go test ./... -count=1` 15 packages 全綠；`go vet ./...` 乾淨（EXIT=0）。前端未動未重跑。gofmt/交叉 build 未跑（syscall 常數於 Windows/Linux 各自平台一致，測試跨平台安全）。
+- 部署注意：F1 需重裝 unit（install.sh 或手動 daemon-reload+restart）才生效；下次崩潰時蒐集 /proc FD 計數、limits、ip -6 addr show 以終裁根因。
+- 未完整驗證：無 VPS 崩潰現場數據，EMFILE/源地址移除/DoT 三候選根因未終裁；本輪修復診斷能力（O1）與已知部署缺陷（F1）。

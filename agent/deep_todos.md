@@ -244,3 +244,13 @@
 - [x] 稽核 TCP/HTTP/SOCKS、UDP association/mapping、source lease、FD/goroutine 與 stats；釋放路徑完整，`int64`/`uint64` 在 60 GB 不溢位，無第二項可證實缺陷。
 - [x] 回歸：鄰近三包 `-count=5`、Windows 全套 15 packages、vet、全套 gofmt、web 73 tests/lint、Linux amd64/arm64 build 全過；WSL race 的 node/stats 全過，proxy 僅既知 virtioproxy loopback 環境失敗。
 - [x] 未完整驗證：無真實 2C4G/60 GB 長壓及 root/netns errno 壓力測試；Windows race 缺 gcc、LSP 缺 gopls。部署後需持續觀察實際流量門檻。
+
+## 2026-09-11 第十六輪：v0.1.9 出站全失敗——O1 觀測性與 F1 LimitNOFILE 修復
+
+- [x] 使用者回報 v0.1.9 升級後再崩：新連線/既有連線/UDP 全掛、Web running、重啟恢復；events.jsonl 大量 `connection.closed success:false error:"proxy connection failed"` 無 destination/outbound 欄位；journal 無 panic。RCA 定位 O1：traffic_observer.go 寫死失敗訊息丟棄真實錯誤鏈，無法區分 EMFILE/EADDRNOTAVAIL/DNS 候選根因；F1：systemd unit 無 LimitNOFILE（soft=1024）。
+- [x] 資源生命週期審計（dialer/source_pool/socket_system/udp_relay/runtime/socks5/http relay/dot/resolver）：無明確 FD/goroutine 洩漏。
+- [x] 修復 O1（TDD RED→GREEN）：write() 增加 classify 參數；dial/association 失敗記錄 `prefix + ": " + describeDialError(err)`（EMFILE/ENFILE→fd limit reached、EADDRNOTAVAIL→source address unavailable、EACCES/EPERM/ECONNREFUSED/ENETUNREACH/EHOSTUNREACH/ETIMEDOUT/ECONNRESET→穩定標籤、context/os deadline→deadline exceeded、DNSError→dns lookup not found/timeout/temporary failure/failed 且不含查詢名稱、fallback 截 200 bytes rune-safe+"..."）；rejected 分支維持原訊息不附加；不新增 Event 欄位（web 向後相容），秘密保護依賴 eventlog redact()。RED：TestTrafficObserverRecordsRealDialErrorClassification（10 cases）＋TestTrafficObserverRecordsUDPAssociationErrorClassification 修復前全失敗於寫死字串；GREEN 全過。
+- [x] 修復 F1：deploy/systemd/s12ryt-ipv6.service [Service] 加 LimitNOFILE=1048576（附註解說明每連線 2+ FD）；需重裝 unit（install.sh 或 daemon-reload+restart）才生效。
+- [x] 契約 §38 寫入 agent/question.md（含「不洩上游細節→記錄真實錯誤依賴 redact」決策、VPS 下次崩潰診斷指令：/proc fd 計數、limits、ip -6 addr show）。
+- [x] 回歸：`go test ./... -count=1` 15 packages 全綠、`go vet ./...` 乾淨；前端未動未重跑。
+- [x] 未完整驗證：無 VPS 崩潰現場 FD/limits 數據，根因（EMFILE/源地址移除/DoT）未終裁；本輪修復診斷能力與已知部署缺陷，待下次崩潰以新錯誤分類終裁。

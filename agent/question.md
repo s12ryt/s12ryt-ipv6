@@ -711,3 +711,32 @@ TDD 證據：
 - **資源生命週期稽核**：逐條審查 TCP/HTTP/SOCKS relay、UDP association/mapping、來源位址 lease、連線關閉與 stats 累積。所有成功/失敗/排空路徑皆有 Close/Release 或既有回收機制；60 GB 遠低於 `int64`/`uint64` 上限，未發現第二項可證實缺陷，故未做無證據改動。
 - 驗證：`internal/node`、`internal/proxy`、`internal/stats` `-count=5` 全綠；Windows `go test ./... -count=1 -timeout=300s` 15 packages 全綠；`go vet ./...`、全部追蹤 Go 檔 gofmt、web 13 files/73 tests、ESLint 全綠；Linux amd64/arm64 `CGO_ENABLED=0` 交叉 build 成功。WSL `-race` 的 `internal/node` 與 `internal/stats` 通過；`internal/proxy` 僅既知 `virtioproxy` loopback `connection refused` 失敗，Windows 對應包五輪全綠。Windows `-race` 因缺少 gcc 無法建置；`gopls` 未安裝，LSP 診斷未執行。
 - 未完整驗證：沒有可用的真實 2C4G VPS 進行 60 GB 長壓，也未在 root network namespace 模擬 Linux `EMFILE`/`ENFILE` 等真實 errno；本輪證明的是可決定性重現且完全符合「代理停服、Web 存活」症狀的故障機制與復原行為，部署後仍需以實際長流量觀察確認完整因果鏈。
+
+## 38. 第十六輪：v0.1.9 資料面出站全失敗（觀測性與部署修復）
+
+更新日期：2026-09-11
+狀態：使用者回報 v0.1.9（含第十五輪修復）VPS 升級後再度崩潰：新連線失敗、既有連線斷、UDP 也掛、Web 顯示 running、重啟恢復；events.jsonl 出現大量 `connection.closed success:false error:"proxy connection failed"` 且無 destination/outbound 欄位（客戶端可 accept、出站 dial 全失敗）；journal 無 panic。使用者授權「F1 + O1 都修」。本節為本輪契約與完成紀錄。
+
+### 38.1 RCA 結論
+
+- **候選根因**（需 VPS 崩潰現場數據才能終裁）：A) FD 耗盡（systemd 預設 soft LimitNOFILE=1024，代理每連線 2+ FD，高併發即 EMFILE）；B) 出站源地址被外部/核心移除 → bind EADDRNOTAVAIL（重啟重新配置地址即恢復，吻合症狀）；C) DoT 解析失敗（亦受 EMFILE 波及）。
+- **共同障礙 O1**：`internal/app/traffic_observer.go` 於 TrafficTCPClosed/UDPClosed 且 Error!=nil 時把 record.Error 寫死為 "proxy connection failed"/"proxy association failed"，真實錯誤鏈（EMFILE/EADDRNOTAVAIL/DNS/timeout）被丟棄，無法區分上述任一根因。
+- **部署缺陷 P1/F1**：`deploy/systemd/s12ryt-ipv6.service` 無 LimitNOFILE；安裝後 soft limit 為 1024。
+- 資源生命週期審計（dialer/source_pool/socket_system/udp_relay/runtime/socks5/http relay/dot/resolver）未發現明確 FD/goroutine 洩漏。
+
+### 38.2 修復契約
+
+- **O1**：`write()` 於 dial/association 失敗時記錄 `failure + ": " + describeDialError(err)`；分類（errors.Is/As 遞迴）為穩定標籤：EMFILE/ENFILE→"fd limit reached"、EADDRNOTAVAIL→"source address unavailable"、EACCES/EPERM→"permission denied"、ECONNREFUSED→"connection refused"、ENETUNREACH→"network unreachable"、EHOSTUNREACH→"host unreachable"、ETIMEDOUT→"connection timed out"、ECONNRESET→"connection reset"、context.DeadlineExceeded/os.ErrDeadlineExceeded→"deadline exceeded"、net.DNSError→"dns lookup not found/timeout/temporary failure/failed"（**不含查詢名稱**）；未知錯誤 fallback 為 err.Error() 截 200 bytes（rune-safe）+"..."。不新增 Event 欄位（向後相容：web 前端顯示 error 字串不變語意）；秘密保護依賴 eventlog 既有 redact()（RegisterSecret 的值在寫檔時替換為 [REDACTED]）。Rejected 分支（connection limit reached）訊息已完整，不附加分類。
+- **F1**：systemd unit [Service] 加 `LimitNOFILE=1048576`，消除 systemd 預設 1024 soft limit 對高併發代理的 EMFILE 風險。
+
+### 38.3 TDD 與驗收
+
+- RED：`TestTrafficObserverRecordsRealDialErrorClassification`（table-driven：EMFILE、ENFILE、EADDRNOTAVAIL、ECONNREFUSED、ENETUNREACH、ETIMEDOUT、context deadline、DNS timeout、DNS not found、500 字元 fallback 截 200+"..."；全部前綴 "proxy connection failed: "；DNS 案例斷言不含查詢名稱 "secret-example.invalid"）＋ `TestTrafficObserverRecordsUDPAssociationErrorClassification`（UDP EMFILE→"proxy association failed: fd limit reached"）；既有統計測試斷言演進為 "proxy connection failed: secret upstream detail"（原設計「不洩上游細節」演進為記錄真實錯誤、依賴 redact 保護——此決策記錄於本節）。修復前 11 個 case 全失敗於寫死字串。
+- GREEN：全套 `go test ./... -count=1` 15 packages、`go vet ./...` 通過。
+- systemd unit 變更為宣告式，無單測；由 install.sh 重裝流程（雙健康檢查+回滾）保障。
+
+### 38.4 部署與後續診斷要求
+
+- F1 需重新安裝 unit 才生效：`curl ... install.sh | sudo sh` 或手動複製 unit + `systemctl daemon-reload && systemctl restart s12ryt-ipv6`。
+- 下次崩潰時（重啟前）於 VPS 蒐集：`ls /proc/$(pidof s12ryt-ipv6)/fd | wc -l`、`cat /proc/$(pidof s12ryt-ipv6)/limits`、`ip -6 addr show`，配合新版 O1 錯誤分類即可終裁 A/B/C 根因。
+- 未完整驗證：無 VPS 崩潰現場 FD/limits 數據，根因 A/B/C 未終裁；本輪修復的是「無法診斷」（O1）與「已知部署缺陷」（F1），非根因本身。
