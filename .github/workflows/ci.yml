@@ -1,0 +1,186 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - '**'
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - 'agent/**'
+      - 'thoughts/**'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - 'agent/**'
+      - 'thoughts/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend lint, tests and build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Lint
+        working-directory: web
+        run: npm run lint
+
+      - name: Unit tests
+        working-directory: web
+        run: npm test -- --run
+
+      - name: Type-check and build
+        working-directory: web
+        run: npm run build
+
+      - name: Upload web assets for Go jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          retention-days: 1
+          if-no-files-found: error
+
+  backend:
+    name: Go vet and race-detector tests
+    needs: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Restore built web assets
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check gofmt
+        shell: bash
+        run: |
+          set -euo pipefail
+          unformatted=$(gofmt -l $(git ls-files '*.go'))
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt is required for the following files: $unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Unit tests with race detector
+        env:
+          CGO_ENABLED: '1'
+        run: go test -race -count=1 -timeout=600s ./...
+
+  build:
+    name: Build linux binary (${{ matrix.arch }})
+    needs: frontend
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - amd64
+          - arm64
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Restore built web assets
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: go build -trimpath -o s12ryt-ipv6-linux-${{ matrix.arch }} ./cmd/s12ryt-ipv6
+
+  deploy-scripts:
+    name: Deploy script checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Syntax check
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n install.sh deploy/install.sh deploy/uninstall.sh deploy/install_test.sh deploy/release_test.sh
+
+      - name: Installer self-tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash deploy/install_test.sh
+          bash deploy/release_test.sh
+
+  integration:
+    name: Netlink and nftables integration tests
+    needs: backend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Run integration tests in disposable network namespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          netns="s12ryt-ci"
+          cleanup() { sudo ip netns del "$netns" 2>/dev/null || true; }
+          trap cleanup EXIT
+          sudo ip netns add "$netns"
+          sudo env PATH="$PATH" HOME="$HOME" ip netns exec "$netns" \
+            env S12RYT_INTEGRATION_NETNS=1 \
+            go test -tags=integration -count=1 -timeout=600s ./internal/network ./internal/firewall
