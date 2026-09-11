@@ -768,3 +768,27 @@ TDD 證據：
 
 - 為何 backend 依賴 frontend artifact：Go embed 必須有 `web/dist`；為何 integration 不需要：`go list -deps` 證實 internal/network 與 internal/firewall 不 import webui。
 - 為何 `-race` 只在 CI：Windows 開發機 CGO_ENABLED=0 無 gcc；race 由 Linux runner 每次推送把關（第十五輪 WSL -race 已人工驗證 0 data race）。
+
+## 40. 第十八輪（2026-09-11）：Web 面板「重新啟動服務」按鈕＋即時日誌串流
+
+### 需求（用戶原話）
+「改成在web面板留一個『重啟流量代理進程』按鈕，並且在web面板中增加一個放實時的那些log資料」
+
+### 契約
+1. **重啟端點** `POST /api/operations/restart`（RequireMutation＋CSRF）：
+   - body `{confirm:boolean}`；confirm!=true→422 "service restart confirmation required"
+   - RestartService：寫 audit 事件（kind=audit/action=service.restart/actor=admin/success=true）→**非同步**延遲 RestartDelay（預設 1.5s）後執行 restartFn→回 202 `{restarting:true}`（不等待進程實際重啟）
+   - restartFn 失敗（進程多已死）僅能寫 system 事件（kind=system/action=service.restart/success=false/error）
+   - production restartFn=`systemctl restart s12ryt-ipv6`；Restart nil（開發環境）→ErrRestartUnavailable→HTTP 503
+   - 選擇 systemd 全進程重啟的理由：用戶手動 systemctl restart 已證實可恢復；僅重啟資料面無法釋放 FD／重新配置源地址
+2. **即時日誌** `GET /api/logs/stream`（RequireSession，SSE）：
+   - eventlog.Logger 新增 Subscribe() →LogSubscription{Events <-chan Event, Close()}；每訂閱 buffer 64、滿則丟最舊塞新（不阻塞寫入路徑）；廣播 redact 後事件；Logger.Close() 關閉全部訂閱。鎖序恆為 mu→subMu
+   - SSE 幀：`event: ready` 開場、`event: log` + data=完整 eventlog.Event JSON、`: heartbeat` 保活（同 /api/events 週期）；訂閱關閉（logger 關閉）時 handler 返回
+3. **前端**：api.restartService()（POST confirm:true）＋api.openLogStream(onLog,onError)（isLogEvent 校驗：kind∈{proxy,system,audit}+action+success+time）；LogsView 即時模式（最新在上、上限 500 條防內存、清空畫面鈕、離開自動 close）；總覽「重新啟動服務」按鈕（ModalDialog 二次確認→restartService→輪詢 /healthz 30×2s→restarted 提示重新登入／failed 提示 SSH 檢查）
+
+### TDD
+- RED→GREEN 全鏈：eventlog 廣播三測試（redact 廣播／慢訂閱不阻塞／Close 關閉）；admin logstream 三測試（無效選項／串流事件與 Content-Type／訂閱關閉返回）；restart coordinator 測試（audit 寫入＋非同步 restartFn 被喚＋nil→ErrRestartUnavailable）＋endpoint 測試（422／202／503）；前端 api 兩測試＋LogsView／App 各一整合測試
+- 驗證：go test ./... 15 packages 全綠、go vet 0、gofmt 乾淨；vitest 13 檔 77 tests 全綠、eslint 0、tsc+vite build 0
+
+### 部署注意
+- VPS 需升級新 binary 後 Web 重啟按鈕與即時日誌才可用（v0.1.9 舊版無此二端點）

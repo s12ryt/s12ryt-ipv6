@@ -287,3 +287,11 @@
 - 驗證（TDD 等價）：actionlint RED（錯誤 workflow 被抓 EXIT=1）→GREEN（ci.yml+release.yml EXIT=0）；本地重跑 CI 命令全綠（npm lint/73 tests/build、gofmt 空、vet 0、go test 15 packages）
 - Git：commit 3c43005 推 origin/main；gh run watch 監看首次真實執行 run 34604069973——全部 6 jobs success（含 -race 全套與 netns integration 在 GitHub ubuntu runner 首次驗證通過）；僅 actions v4 系列 Node 20 deprecation 非阻斷警告（與 release.yml 一致）
 - 治理：question.md §39、deep_todos.md 第十七輪、項目表.md 加 ci.yml 條目（含 netls→netns 錯字修正）、本檔記錄
+
+## 2026-09-11 第十八輪：重啟按鈕＋即時日誌
+
+- 讀取：admin/http.go、sse.go、sse_test.go、operations.go、operations_service.go(+test)、operations_test.go、eventlog/logger.go(+test)、web api.ts(+test)、LogsView.tsx(+test)、App.tsx(+test)、ModalDialog.tsx、production_build.go
+- 建立：admin/logstream.go+logstream_test.go
+- 編輯：eventlog/logger.go（Subscribe/LogSubscription/notifySubscribers/closeSubscribers）；admin/operations_service.go（介面+Options Restart/RestartDelay+ErrRestartUnavailable+RestartService+SubscribeLogs）；admin/operations.go（介面+POST /api/operations/restart）；admin/http.go（sseHeartbeat 欄位+SetLogStreamSource+GET /api/logs/stream）；app/production_build.go（restartFn+RestartDelay 1.5s+SetLogStreamSource）；web api.ts/api.test.ts/LogsView.tsx/LogsView.test.tsx/App.tsx/App.test.tsx
+- 驗證：go test ./... 15 packages EXIT=0；vet 0；gofmt 修 production_build.go 後全倉乾淨；vitest 77 tests（13 檔）EXIT=0；eslint 0；vite build 0
+- 教訓：admin 包 Kind 常數須加 eventlog. 前綴；機械替換大檔用 pwsh 腳本避開 edit 工具反覆附 README 全文；SSE handler 測試模式（streamRecorder+waitForFlush+done chan）可直接復用

@@ -264,3 +264,13 @@
 - [x] TDD 等價：actionlint RED（臨時錯誤 workflow 被抓 EXIT=1）→ GREEN（ci.yml+release.yml EXIT=0）；本地重跑 CI 命令全綠（npm lint/73 tests/build 12.49s、gofmt 空、vet 0、go test 15 packages）。
 - [x] commit 3c43005 推送後首次真實 CI（run 34604069973）：全部 6 jobs success，含 -race 全套與 netns integration（GitHub ubuntu runner 證實可用）；僅 actions v4 系列 Node 20 deprecation 非阻斷警告（與 release.yml 一致，未來統一升級）。
 - [x] 契約 §39 寫入 agent/question.md；項目表.md 增 ci.yml 條目。
+
+## 2026-09-11 第十八輪：Web 面板重啟按鈕＋即時日誌
+
+- [x] 盤點既有基建（SSE EventHub／operations API／eventlog Tail／ModalDialog／LogsView），確定 systemd 全進程重啟＋SSE log stream 方案
+- [x] eventlog.Logger 訂閱廣播（buffer 64 滿則丟舊、redact 後廣播、Close 關全部；TDD 三測試）
+- [x] admin：NewLogStreamHandler（GET /api/logs/stream）＋RestartService（POST /api/operations/restart，202 非同步、audit service.restart、ErrRestartUnavailable→503）
+- [x] production_build 注入 restartFn=systemctl restart、SetLogStreamSource(logger.Subscribe)
+- [x] 前端：api.restartService/openLogStream（isLogEvent 校驗）；LogsView 即時模式（500 上限／清空畫面）；總覽重啟按鈕（二次確認＋/healthz 輪詢）
+- [x] 全套驗證：go 15 packages＋vet＋gofmt 全綠；vitest 77 tests＋lint＋build 全綠
+- [ ] 待 VPS 部署新版本後實測重啟按鈕與即時日誌
