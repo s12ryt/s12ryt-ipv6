@@ -741,3 +741,30 @@ TDD 證據：
 - F1 需重新安裝 unit 才生效：`curl ... install.sh | sudo sh` 或手動複製 unit + `systemctl daemon-reload && systemctl restart s12ryt-ipv6`。
 - 下次崩潰時（重啟前）於 VPS 蒐集：`ls /proc/$(pidof s12ryt-ipv6)/fd | wc -l`、`cat /proc/$(pidof s12ryt-ipv6)/limits`、`ip -6 addr show`，配合新版 O1 錯誤分類即可終裁 A/B/C 根因。
 - 未完整驗證：無 VPS 崩潰現場 FD/limits 數據，根因 A/B/C 未終裁；本輪修復的是「無法診斷」（O1）與「已知部署缺陷」（F1），非根因本身。
+
+## 39. 第十七輪：push 觸發的 CI 流水線（使用者需求：「做一個CI-workflow用於在代碼推送後就可以發現有無bug的CI流水線」）
+
+### 需求與契約
+
+- 觸發：`push`（全分支）+ `pull_request` + `workflow_dispatch`；`paths-ignore` 僅 `**.md`、`LICENSE`、`.gitignore`、`agent/**`、`thoughts/**`（純文件變更不觸發）。
+- `concurrency: ci-${{ github.ref }}` + `cancel-in-progress`（同分支新推送取消舊跑）；`permissions: contents: read`（最小權限）。
+
+### 五 jobs 設計（.github/workflows/ci.yml）
+
+1. **frontend**：`npm ci`→`npm run lint`→`npm test -- --run`→`npm run build`→上傳 artifact `web-dist`（retention 1 天，`if-no-files-found: error`）。
+2. **backend**（needs frontend）：下載 `web-dist` 到 `web/dist`（`web/dist` 在 .gitignore 但 `web/embed.go` 有 `//go:embed all:dist`，Go 編譯必須先有產物）→gofmt 檢查（`git ls-files '*.go'` 非空即 `::error::`+exit 1）→`go vet`→`go test -race -count=1 -timeout=600s ./...`（CGO_ENABLED=1 顯式；Windows 開發機無法跑 race，由 Linux runner 承擔）。
+3. **build**（needs frontend，matrix amd64/arm64，fail-fast: false）：`CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath`（與 GoReleaser 發布口徑一致）。
+4. **deploy-scripts**（無依賴）：`bash -n` 五腳本＋`bash deploy/install_test.sh`＋`bash deploy/release_test.sh`（沿用 release.yml 慣例）。
+5. **integration**（needs backend）：`go mod download`（runner user 身分，供之後 sudo env 使用）→建立一次性 netns `s12ryt-ci`（`trap` cleanup EXIT）→`sudo env PATH/HOME ip netns exec s12ryt-ci env S12RYT_INTEGRATION_NETNS=1 go test -tags=integration -count=1 -timeout=600s ./internal/network ./internal/firewall`（此二 package 不依賴 webui，故不需 dist artifact）。
+
+### 驗收（TDD 等價＋真實執行）
+
+- RED 等價：actionlint（v1.7.12，go install）對臨時錯誤 workflow（未定義 matrix.arch）報錯 EXIT=1，證明檢查能力有效。
+- GREEN：actionlint 對 ci.yml 與 release.yml 均 EXIT=0；本地重跑 CI 將執行的關鍵命令全綠（npm lint/73 tests/build、gofmt 空、vet 0、`go test ./... -count=1 -timeout=600s` 15 packages）。
+- 首次真實執行（run 34604069973，commit 3c43005）：**全部 6 jobs success**——frontend、deploy-scripts、backend（含 -race 全套）、build amd64、build arm64、integration（netns 在 GitHub ubuntu runner 可用，nftables/netlink 全過）。
+- 已知非阻斷警告：actions/checkout@v4 等被標 Node.js 20 deprecated（強制跑 Node 24），與 release.yml 現狀一致；未來 GH 淘汰前可統一升級兩個 workflow 的 action 版本。
+
+### 邊界與理由
+
+- 為何 backend 依賴 frontend artifact：Go embed 必須有 `web/dist`；為何 integration 不需要：`go list -deps` 證實 internal/network 與 internal/firewall 不 import webui。
+- 為何 `-race` 只在 CI：Windows 開發機 CGO_ENABLED=0 無 gcc；race 由 Linux runner 每次推送把關（第十五輪 WSL -race 已人工驗證 0 data race）。

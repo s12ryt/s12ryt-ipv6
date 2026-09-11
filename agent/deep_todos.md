@@ -256,3 +256,11 @@
 - [x] 未完整驗證：無 VPS 崩潰現場 FD/limits 數據，根因（EMFILE/源地址移除/DoT）未終裁；本輪修復診斷能力與已知部署缺陷，待下次崩潰以新錯誤分類終裁。
 - [x] 使用者 9/11 20:17 第二次崩潰數據：本次運行記憶體峰值僅 101.6M（排除記憶體因素）；20:18:00 重啟後 1.7s 內兩條 component.degraded（疑似 service 啟動路徑 reconcile/restore 失敗，可能指向根因 B 地址配置）；events 仍寫死錯誤（VPS 跑舊版）。據此發現並修復 O3：production_build.go report() 寫死 Error 丟棄 component/cause，改為 componentDegradedMessage()（"component degraded: " + component + ": " + truncateErrorDetail 截斷）。RED：TestComponentDegradedMessageIncludesComponentAndCause／TruncatesLongCause／TestBuildProductionRecordsComponentAndCauseInDegradedEvent（覆寫 productionTestPlatform.hostAddresses 觸發 degraded，corrupt 檔案場景不觸發 report 已改棄）；GREEN：15 packages 全綠、vet/gofmt 乾淨。
 - [ ] 待辦：發新 Release（含 O1+F1+O3）升級 VPS；升級後讀 Web 總覽 Issues／`agent status` 的 degraded 細節，並於下次崩潰蒐集 /proc FD 計數、limits、`ip -6 addr show` 以終裁根因 A/B/C。
+
+## 2026-09-11 第十七輪：push 觸發的 CI 流水線（ci.yml）
+
+- [x] 使用者需求：「做一個CI-workflow用於在代碼推送後就可以發現有無bug的CI流水線」。盤點：倉庫僅有 tag 觸發的 release.yml，無 push CI。
+- [x] 設計並寫入 .github/workflows/ci.yml（186 行）：push/PR/手動觸發、paths-ignore 文件類、concurrency 取消舊跑、permissions contents:read；五 jobs＝frontend（npm ci→lint→test→build→artifact web-dist）→backend（下載 dist→gofmt→vet→`go test -race` 全套）→build（matrix amd64/arm64 CGO_ENABLED=0 linux）＋deploy-scripts（bash -n+install_test+release_test）＋integration（needs backend；一次性 netns s12ryt-ci、trap 清理、S12RYT_INTEGRATION_NETNS=1、-tags=integration 跑 internal/network+internal/firewall）。關鍵約束：web/dist 在 .gitignore 但 //go:embed all:dist → backend/build 需 frontend artifact；network/firewall 不依賴 webui → integration 不需。
+- [x] TDD 等價：actionlint RED（臨時錯誤 workflow 被抓 EXIT=1）→ GREEN（ci.yml+release.yml EXIT=0）；本地重跑 CI 命令全綠（npm lint/73 tests/build 12.49s、gofmt 空、vet 0、go test 15 packages）。
+- [x] commit 3c43005 推送後首次真實 CI（run 34604069973）：全部 6 jobs success，含 -race 全套與 netns integration（GitHub ubuntu runner 證實可用）；僅 actions v4 系列 Node 20 deprecation 非阻斷警告（與 release.yml 一致，未來統一升級）。
+- [x] 契約 §39 寫入 agent/question.md；項目表.md 增 ci.yml 條目。

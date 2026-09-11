@@ -279,3 +279,11 @@
 - 結論：service component 的 degraded cause 必為三前綴之一——"reconcile resources: resource state is unavailable: ..."（store 載入失敗）/"reconcile resources: complete residual drains: ..."（殘留 drain 清理失敗）/"reconcile resources: ..."（Reconcile 重新配置地址失敗，含 EADDRNOTAVAIL/DAD failed 即根因 B 證據）/"restore nodes: ..."（節點恢復失敗，含 bind/EADDRNOTAVAIL 即地址缺失指紋）/"save statistics: ..."（stats 寫檔失敗，週期性非啟動期）
 - 9/11 兩條 degraded 啟動後 1.7s 內間隔 4ms → 高度吻合 L96/L99 連續觸發（reconcile+restore 接連失敗）→ 指向系統層地址配置問題（根因 B 方向）；已交付 cause→根因對照表待用戶回報 actual 字串
 - 此為分析記錄，無代碼變更；唯一剩餘項為用戶行動（回報 agent status Issues / 崩潰現場診斷）
+
+## 2026-09-11 第十七輪：CI 流水線（ci.yml）
+
+- 讀取：.github/workflows/release.yml（慣例來源）、web/package.json scripts、.gitignore（web/dist）、web/embed.go（//go:embed all:dist）
+- 建立：.github/workflows/ci.yml（186 行，五 jobs：frontend→backend(-race)+build matrix+deploy-scripts→integration netns）；關鍵設計＝backend/build 需 frontend 的 web-dist artifact（embed 約束）、integration 不需（network/firewall 不依賴 webui）
+- 驗證（TDD 等價）：actionlint RED（錯誤 workflow 被抓 EXIT=1）→GREEN（ci.yml+release.yml EXIT=0）；本地重跑 CI 命令全綠（npm lint/73 tests/build、gofmt 空、vet 0、go test 15 packages）
+- Git：commit 3c43005 推 origin/main；gh run watch 監看首次真實執行 run 34604069973——全部 6 jobs success（含 -race 全套與 netns integration 在 GitHub ubuntu runner 首次驗證通過）；僅 actions v4 系列 Node 20 deprecation 非阻斷警告（與 release.yml 一致）
+- 治理：question.md §39、deep_todos.md 第十七輪、項目表.md 加 ci.yml 條目（含 netls→netns 錯字修正）、本檔記錄
