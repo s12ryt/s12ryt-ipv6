@@ -295,3 +295,10 @@
 - 編輯：eventlog/logger.go（Subscribe/LogSubscription/notifySubscribers/closeSubscribers）；admin/operations_service.go（介面+Options Restart/RestartDelay+ErrRestartUnavailable+RestartService+SubscribeLogs）；admin/operations.go（介面+POST /api/operations/restart）；admin/http.go（sseHeartbeat 欄位+SetLogStreamSource+GET /api/logs/stream）；app/production_build.go（restartFn+RestartDelay 1.5s+SetLogStreamSource）；web api.ts/api.test.ts/LogsView.tsx/LogsView.test.tsx/App.tsx/App.test.tsx
 - 驗證：go test ./... 15 packages EXIT=0；vet 0；gofmt 修 production_build.go 後全倉乾淨；vitest 77 tests（13 檔）EXIT=0；eslint 0；vite build 0
 - 教訓：admin 包 Kind 常數須加 eventlog. 前綴；機械替換大檔用 pwsh 腳本避開 edit 工具反覆附 README 全文；SSE handler 測試模式（streamRecorder+waitForFlush+done chan）可直接復用
+## 2026-09-11 v1.0.6 Release 發佈（第十八輪尾）
+
+- 用戶指定版本 1.0.6（非建議的 v0.2.0）；annotated tag v1.0.6 打在 0ebe86c（main HEAD）
+- Release workflow 34608354939 success（14:09:19Z 發佈，非 draft/prerelease）
+- 產物：checksums.txt、s12ryt-ipv6_1.0.6_Linux_x86_64(+tar.gz)、Linux_arm64(+tar.gz)
+- 內容：v0.1.9→v1.0.6 打包 O1 錯誤分類+F1 LimitNOFILE+O3 degraded 細節+Web 重啟按鈕+即時日誌
+- VPS 升級路徑：重跑一鍵安裝（install.sh）同時更新 binary 與 systemd unit
