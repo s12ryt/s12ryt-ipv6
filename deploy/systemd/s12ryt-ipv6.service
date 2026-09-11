@@ -12,6 +12,10 @@ ExecStart=/usr/local/bin/s12ryt-ipv6 serve --data-dir /etc/s12ryt-ipv6
 Restart=on-failure
 RestartSec=3s
 TimeoutStopSec=90s
+# Each proxied connection holds 2+ descriptors (inbound + outbound), so the
+# systemd default soft limit of 1024 exhausts quickly under load and every
+# outbound dial fails with EMFILE.
+LimitNOFILE=1048576
 UMask=0077
 AmbientCapabilities=CAP_NET_ADMIN
 CapabilityBoundingSet=CAP_NET_ADMIN

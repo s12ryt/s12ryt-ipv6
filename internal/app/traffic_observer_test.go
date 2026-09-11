@@ -1,8 +1,14 @@
 package app
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"net"
 	"net/netip"
+	"os"
+	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/s12ryt/s12ryt-ipv6/internal/eventlog"
@@ -63,7 +69,7 @@ func TestTrafficObserverMaintainsActiveAndCumulativeStatistics(t *testing.T) {
 	if tcp.Kind != eventlog.KindProxy || tcp.Action != "connection.closed" || tcp.Success ||
 		tcp.SourceIP != source.String() || tcp.DestinationHost != destination.Addr().String() ||
 		tcp.DestinationPort != destination.Port() || tcp.OutboundIP != "2001:4860:1::1" ||
-		tcp.Error != "proxy connection failed" {
+		tcp.Error != "proxy connection failed: secret upstream detail" {
 		t.Fatalf("TCP log = %#v", tcp)
 	}
 	if logger.events[1].Action != "association.closed" || !logger.events[1].Success {
@@ -104,3 +110,120 @@ type failingTrafficLogger struct {
 }
 
 func (l *failingTrafficLogger) Write(eventlog.Event) error { return l.err }
+
+func TestTrafficObserverRecordsRealDialErrorClassification(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		expected string
+	}{
+		{
+			name: "emfile maps to fd limit reached",
+			err: &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{
+				Syscall: "socket", Err: syscall.EMFILE,
+			}},
+			expected: "proxy connection failed: fd limit reached",
+		},
+		{
+			name: "enfile maps to fd limit reached",
+			err: &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{
+				Syscall: "connect", Err: syscall.ENFILE,
+			}},
+			expected: "proxy connection failed: fd limit reached",
+		},
+		{
+			name: "eaddrnotavail maps to source address unavailable",
+			err: &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{
+				Syscall: "connect", Err: syscall.EADDRNOTAVAIL,
+			}},
+			expected: "proxy connection failed: source address unavailable",
+		},
+		{
+			name: "econnrefused maps to connection refused",
+			err: &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{
+				Syscall: "connect", Err: syscall.ECONNREFUSED,
+			}},
+			expected: "proxy connection failed: connection refused",
+		},
+		{
+			name: "enetunreach maps to network unreachable",
+			err: &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{
+				Syscall: "connect", Err: syscall.ENETUNREACH,
+			}},
+			expected: "proxy connection failed: network unreachable",
+		},
+		{
+			name: "kernel etimedout maps to connection timed out",
+			err: &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{
+				Syscall: "connect", Err: syscall.ETIMEDOUT,
+			}},
+			expected: "proxy connection failed: connection timed out",
+		},
+		{
+			name:     "context deadline maps to deadline exceeded",
+			err:      fmt.Errorf("dial: %w", context.DeadlineExceeded),
+			expected: "proxy connection failed: deadline exceeded",
+		},
+		{
+			name:     "dns timeout maps to dns classification without leaking query name",
+			err:      &net.DNSError{Err: "i/o timeout", Name: "secret-example.invalid", IsTimeout: true, IsTemporary: true},
+			expected: "proxy connection failed: dns lookup timeout",
+		},
+		{
+			name:     "dns not found maps to dns classification without leaking query name",
+			err:      &net.DNSError{Err: "no such host", Name: "secret-example.invalid", IsNotFound: true},
+			expected: "proxy connection failed: dns lookup not found",
+		},
+		{
+			name:     "unknown error falls back to truncated message",
+			err:      errors.New(strings.Repeat("x", 500)),
+			expected: "proxy connection failed: " + strings.Repeat("x", 200) + "...",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := stats.NewRegistry()
+			logger := &recordingTrafficLogger{}
+			observer, err := NewTrafficObserver(registry, logger, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			observer.Observe(node.TrafficEvent{
+				Lifecycle: node.TrafficTCPClosed, NodeID: "edge",
+				Traffic: proxy.ProxyTraffic{Protocol: "socks"},
+				Error:   tc.err,
+			})
+			if len(logger.events) != 1 {
+				t.Fatalf("logged events = %#v", logger.events)
+			}
+			if got := logger.events[0].Error; got != tc.expected {
+				t.Fatalf("error = %q, want %q", got, tc.expected)
+			}
+			if strings.Contains(logger.events[0].Error, "secret-example.invalid") {
+				t.Fatalf("dns query name leaked: %q", logger.events[0].Error)
+			}
+		})
+	}
+}
+
+func TestTrafficObserverRecordsUDPAssociationErrorClassification(t *testing.T) {
+	registry := stats.NewRegistry()
+	logger := &recordingTrafficLogger{}
+	observer, err := NewTrafficObserver(registry, logger, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer.Observe(node.TrafficEvent{
+		Lifecycle: node.TrafficUDPClosed, NodeID: "edge",
+		Traffic: proxy.ProxyTraffic{Protocol: "socks"},
+		Error: &net.OpError{Op: "dial", Net: "udp6", Err: &os.SyscallError{
+			Syscall: "socket", Err: syscall.EMFILE,
+		}},
+	})
+	if len(logger.events) != 1 {
+		t.Fatalf("logged events = %#v", logger.events)
+	}
+	if got := logger.events[0].Error; got != "proxy association failed: fd limit reached" {
+		t.Fatalf("error = %q", got)
+	}
+}
