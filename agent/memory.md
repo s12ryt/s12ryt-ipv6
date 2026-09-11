@@ -272,3 +272,10 @@
 - 驗證：目標 3 測試 PASS；go test ./... -count=1 15 packages 全綠；go vet 乾淨；gofmt -l internal/app 空
 - 治理：question.md §38.2 補 O3 契約；deep_todos.md 第十六輪補 O3 條目與待辦（發 Release、終裁根因）；本檔記錄
 - 教訓：corrupt resources/nodes 在 store 建立階段就被容忍，不會走到 report()；整合測試 degraded 事件應以 platform.hostAddresses 覆寫觸發（L221 RefreshHostAddresses 失敗路徑）
+
+## 2026-09-11 第十六輪（續二）：service degraded cause 錯誤鏈深挖
+
+- 讀取：internal/app/service.go（L27 ReportDegraded 欄位、L96-101 reconcile/restore、L140-143 save statistics）、production_build.go（L440-457 ReconcileResources/RestoreNodes 綁定）
+- 結論：service component 的 degraded cause 必為三前綴之一——"reconcile resources: resource state is unavailable: ..."（store 載入失敗）/"reconcile resources: complete residual drains: ..."（殘留 drain 清理失敗）/"reconcile resources: ..."（Reconcile 重新配置地址失敗，含 EADDRNOTAVAIL/DAD failed 即根因 B 證據）/"restore nodes: ..."（節點恢復失敗，含 bind/EADDRNOTAVAIL 即地址缺失指紋）/"save statistics: ..."（stats 寫檔失敗，週期性非啟動期）
+- 9/11 兩條 degraded 啟動後 1.7s 內間隔 4ms → 高度吻合 L96/L99 連續觸發（reconcile+restore 接連失敗）→ 指向系統層地址配置問題（根因 B 方向）；已交付 cause→根因對照表待用戶回報 actual 字串
+- 此為分析記錄，無代碼變更；唯一剩餘項為用戶行動（回報 agent status Issues / 崩潰現場診斷）
