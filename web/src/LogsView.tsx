@@ -4,7 +4,7 @@ import { APIError, ApiClient, LogEvent, LogKind, StatisticsSnapshot } from './ap
 import type { PanelMode } from './panelMode'
 import { ModalDialog } from './ModalDialog'
 
-type LogsClient = Pick<ApiClient, 'get' | 'mutate'>
+type LogsClient = Pick<ApiClient, 'get' | 'mutate' | 'openLogStream'>
 type ConfirmAction = { kind: 'logs' } | { kind: 'stats'; node: string } | null
 
 export function LogsView({ mode, client, statistics, onStatisticsChange }: {
@@ -14,6 +14,8 @@ export function LogsView({ mode, client, statistics, onStatisticsChange }: {
   onStatisticsChange: (statistics: StatisticsSnapshot) => void
 }) {
   const [events, setEvents] = useState<LogEvent[]>([])
+  const [live, setLive] = useState(false)
+  const [liveEvents, setLiveEvents] = useState<LogEvent[]>([])
   const [kind, setKind] = useState<LogKind | ''>('')
   const [node, setNode] = useState('')
   const [action, setAction] = useState('')
@@ -43,6 +45,13 @@ export function LogsView({ mode, client, statistics, onStatisticsChange }: {
   }, [client, logPath])
 
   useEffect(() => { void loadLogs() }, [loadLogs])
+
+  useEffect(() => {
+    if (!live) return
+    return client.openLogStream((event) => {
+      setLiveEvents((previous) => [event, ...previous].slice(0, 500))
+    })
+  }, [live, client])
 
   const submitFilters = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void loadLogs() }
 
@@ -95,18 +104,20 @@ export function LogsView({ mode, client, statistics, onStatisticsChange }: {
       </section>
 
       <section className="resource-section" aria-labelledby="events-title">
-        <div className="section-heading"><h2 id="events-title">事件</h2>{mode === 'advanced' && <button className="danger-button" type="button" onClick={() => setConfirm({ kind: 'logs' })}><Trash2 size={16} aria-hidden="true" />清除全部日誌</button>}</div>
-        <form className="log-filters" aria-label="日誌篩選" onSubmit={submitFilters}>
+        <div className="section-heading"><h2 id="events-title">事件</h2><span className="heading-actions"><button className="secondary-button" type="button" onClick={() => setLive(!live)}>{live ? '結束即時日誌' : '即時日誌'}</button>{live && <button className="secondary-button" type="button" onClick={() => setLiveEvents([])}>清空畫面</button>}{mode === 'advanced' && !live && <button className="danger-button" type="button" onClick={() => setConfirm({ kind: 'logs' })}><Trash2 size={16} aria-hidden="true" />清除全部日誌</button>}</span></div>
+        {!live && <form className="log-filters" aria-label="日誌篩選" onSubmit={submitFilters}>
           <label className="field"><span>事件類型</span><select value={kind} onChange={(event) => setKind(event.target.value as LogKind | '')}><option value="">全部</option><option value="proxy">代理</option><option value="system">系統</option><option value="audit">稽核</option></select></label>
           <label className="field"><span>節點篩選</span><input value={node} maxLength={128} onChange={(event) => setNode(event.target.value)} /></label>
           <label className="field"><span>動作篩選</span><input value={action} maxLength={128} onChange={(event) => setAction(event.target.value)} /></label>
           <label className="field"><span>結果</span><select value={success} onChange={(event) => setSuccess(event.target.value)}><option value="">全部</option><option value="true">成功</option><option value="false">失敗</option></select></label>
           <label className="field"><span>筆數</span><input type="number" min="1" max="1000" value={limit} onChange={(event) => setLimit(event.target.value)} required /></label>
           <button className="primary-button filter-button" type="submit"><Filter size={16} aria-hidden="true" />套用篩選</button>
-        </form>
+        </form>}
         <div className="event-list">
-          {events.map((event, index) => <EventRow event={event} key={`${event.time}:${event.kind}:${event.action}:${index}`} />)}
-          {events.length === 0 && <p className="empty-state">沒有符合條件的事件</p>}
+          {live
+            ? liveEvents.map((event, index) => <EventRow event={event} key={`live:${event.time}:${index}`} />)
+            : events.map((event, index) => <EventRow event={event} key={`${event.time}:${event.kind}:${event.action}:${index}`} />)}
+          {(live ? liveEvents.length === 0 : events.length === 0) && <p className="empty-state">{live ? '等待新事件…' : '沒有符合條件的事件'}</p>}
         </div>
       </section>
       {confirm && <ModalDialog title={confirmationTitle(confirm)} onClose={() => setConfirm(null)} size="medium" footer={(requestClose) => <><button className="secondary-button" type="button" onClick={requestClose}>取消</button><button className="danger-button" type="button" disabled={busy !== ''} onClick={() => confirm.kind === 'logs' ? void clearLogs() : void resetStatistics(confirm.node)}>確認{confirm.kind === 'logs' ? '清除全部日誌' : '歸零'}</button></>}><p>{confirmationMessage(confirm)}</p></ModalDialog>}

@@ -112,4 +112,54 @@ describe('ApiClient', () => {
     close()
     expect(source.close).toHaveBeenCalledTimes(1)
   })
+
+  it('restarts the service with explicit confirmation', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ authenticated: true, csrf_token: 'restart-token' }))
+      .mockResolvedValueOnce(jsonResponse({ restarting: true }, 202))
+    const client = new ApiClient({ fetcher, origin: 'http://localhost:34466' })
+    await client.currentSession()
+
+    await expect(client.restartService()).resolves.toBeUndefined()
+
+    expect(fetcher).toHaveBeenNthCalledWith(2, '/api/operations/restart', expect.objectContaining({ method: 'POST' }))
+    const request = fetcher.mock.calls[1][1]
+    expect(JSON.parse(request?.body as string)).toEqual({ confirm: true })
+    const headers = new Headers(request?.headers)
+    expect(headers.get('X-CSRF-Token')).toBe('restart-token')
+  })
+
+  it('streams live log events, ignores malformed data, and closes cleanly', () => {
+    const listeners = new Map<string, (event: MessageEvent<string>) => void>()
+    const source = {
+      addEventListener: vi.fn((type: string, listener: (event: MessageEvent<string>) => void) => listeners.set(type, listener)),
+      close: vi.fn(),
+    }
+    const onLog = vi.fn()
+    const onError = vi.fn()
+    const client = new ApiClient({
+      fetcher: vi.fn<typeof fetch>(),
+      origin: 'http://localhost:34466',
+      eventSource: (path) => {
+        expect(path).toBe('/api/logs/stream')
+        return source
+      },
+    })
+
+    const close = client.openLogStream(onLog, onError)
+    listeners.get('log')?.(new MessageEvent('log', { data: JSON.stringify({
+      time: '2026-09-11T12:00:00Z', kind: 'proxy', action: 'connection.closed', success: false, error: 'proxy connection failed: fd limit reached',
+    }) }))
+    listeners.get('log')?.(new MessageEvent('log', { data: '{broken' }))
+    listeners.get('log')?.(new MessageEvent('log', { data: JSON.stringify({ time: 'nope', kind: 'proxy' }) }))
+    listeners.get('error')?.(new MessageEvent('error'))
+
+    expect(onLog).toHaveBeenCalledTimes(1)
+    expect(onLog).toHaveBeenCalledWith(expect.objectContaining({ kind: 'proxy', action: 'connection.closed' }))
+    expect(onError).toHaveBeenCalledTimes(1)
+    close()
+    close()
+    expect(source.close).toHaveBeenCalledTimes(1)
+  })
 })

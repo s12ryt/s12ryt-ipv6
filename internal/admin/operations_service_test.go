@@ -31,12 +31,69 @@ func (l *fakeOperationsLogger) Clear(actor string) error {
 	l.clearActor = actor
 	return nil
 }
+func (l *fakeOperationsLogger) Subscribe() *eventlog.LogSubscription { return nil }
 func (l *fakeOperationsLogger) Write(event eventlog.Event) error {
 	if l.err != nil {
 		return l.err
 	}
 	l.events = append(l.events, event)
 	return nil
+}
+
+func TestOperationsCoordinatorRestartService(t *testing.T) {
+	build := func(logger *fakeOperationsLogger, restart func() error, delay time.Duration) *OperationsCoordinator {
+		queryer := &fakeAdminDNSQueryer{}
+		resolver, err := dns64.NewResolver([]dns64.Endpoint{{
+			Name: "old", Address: netip.MustParseAddr("2606:4700:4700::64"), Port: 853, ServerName: "cloudflare-dns.com",
+		}}, queryer, time.Now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		service, err := NewOperationsCoordinator(OperationsCoordinatorOptions{
+			Logs: logger, Stats: stats.NewRegistry(),
+			SaveStats:        func(stats.Snapshot) error { return nil },
+			NAT64:            &fakeNAT64Operations{},
+			SaveNAT64:        func(netip.Prefix) error { return nil },
+			Firewall:         &fakeFirewallDiagnoser{},
+			Resolver:         resolver,
+			Resolvers:        []config.Resolver{{Name: "old", Address: "2606:4700:4700::64", Port: 853, ServerName: "cloudflare-dns.com", Enabled: true}},
+			SaveResolvers:    func([]config.Resolver) error { return nil },
+			Connectivity:     &fakeConnectivityTester{},
+			BaseHealth:       func() HealthState { return HealthHealthy },
+			DiagnosisTimeout: time.Second,
+			Restart:          restart,
+			RestartDelay:     delay,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return service
+	}
+
+	if err := build(&fakeOperationsLogger{}, nil, 0).RestartService(context.Background()); !errors.Is(err, ErrRestartUnavailable) {
+		t.Fatalf("RestartService() without restart hook = %v, want ErrRestartUnavailable", err)
+	}
+
+	restarted := make(chan struct{})
+	logger := &fakeOperationsLogger{}
+	service := build(logger, func() error { close(restarted); return nil }, 10*time.Millisecond)
+	if err := service.RestartService(context.Background()); err != nil {
+		t.Fatalf("RestartService() error = %v", err)
+	}
+	select {
+	case <-restarted:
+	case <-time.After(time.Second):
+		t.Fatal("restart hook was not invoked")
+	}
+	found := false
+	for _, event := range logger.events {
+		if event.Kind == eventlog.KindAudit && event.Action == "service.restart" && event.Actor == "admin" && event.Success {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("audit events = %#v, want service.restart audit", logger.events)
+	}
 }
 
 type fakeNAT64Operations struct {

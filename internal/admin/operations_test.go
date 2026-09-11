@@ -30,6 +30,8 @@ type fakeOperationsService struct {
 	connectivity      []ConnectivityCheck
 	operationErr      error
 	connectivityCalls int
+	restartErr        error
+	restartCalls      int
 }
 
 func (s *fakeOperationsService) Overview() OperationsSnapshot { return s.overview }
@@ -57,6 +59,44 @@ func (s *fakeOperationsService) UpdateResolvers(_ context.Context, resolvers []c
 func (s *fakeOperationsService) TestConnectivity(context.Context) ([]ConnectivityCheck, error) {
 	s.connectivityCalls++
 	return s.connectivity, s.operationErr
+}
+func (s *fakeOperationsService) RestartService(_ context.Context) error {
+	s.restartCalls++
+	return s.restartErr
+}
+
+func TestHTTPServerOperationsRestartEndpoint(t *testing.T) {
+	service := &fakeOperationsService{}
+	server := newTestHTTPServer(t, &fakePasswordAuthenticator{password: "correct-password-value"}, 5, 500, func() HealthState { return HealthHealthy })
+	if err := server.SetOperationsService(service); err != nil {
+		t.Fatal(err)
+	}
+	cookie, csrf := loginForMutation(t, server)
+
+	unconfirmed := httptest.NewRecorder()
+	server.Handler().ServeHTTP(unconfirmed, mutationRequest(http.MethodPost, "/api/operations/restart", `{"confirm":false}`, cookie, csrf))
+	if unconfirmed.Code != http.StatusUnprocessableEntity || !strings.Contains(unconfirmed.Body.String(), "service restart confirmation required") {
+		t.Fatalf("unconfirmed restart = %d %s", unconfirmed.Code, unconfirmed.Body.String())
+	}
+	if service.restartCalls != 0 {
+		t.Fatalf("restart calls after unconfirmed request = %d", service.restartCalls)
+	}
+
+	confirmed := httptest.NewRecorder()
+	server.Handler().ServeHTTP(confirmed, mutationRequest(http.MethodPost, "/api/operations/restart", `{"confirm":true}`, cookie, csrf))
+	if confirmed.Code != http.StatusAccepted || !strings.Contains(confirmed.Body.String(), `"restarting":true`) {
+		t.Fatalf("confirmed restart = %d %s", confirmed.Code, confirmed.Body.String())
+	}
+	if service.restartCalls != 1 {
+		t.Fatalf("restart calls = %d, want 1", service.restartCalls)
+	}
+
+	service.restartErr = ErrRestartUnavailable
+	unavailable := httptest.NewRecorder()
+	server.Handler().ServeHTTP(unavailable, mutationRequest(http.MethodPost, "/api/operations/restart", `{"confirm":true}`, cookie, csrf))
+	if unavailable.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unavailable restart = %d %s", unavailable.Code, unavailable.Body.String())
+	}
 }
 
 func TestHTTPServerOperationsQueriesAndMutations(t *testing.T) {

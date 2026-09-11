@@ -295,6 +295,30 @@ export class ApiClient {
     }
   }
 
+  async restartService(): Promise<void> {
+    await this.mutate<{ restarting: boolean }>('/api/operations/restart', 'POST', { confirm: true })
+  }
+
+  openLogStream(onLog: (event: LogEvent) => void, onError: () => void = () => undefined): () => void {
+    if (!this.eventSource) return () => undefined
+    const source = this.eventSource('/api/logs/stream')
+    source.addEventListener('log', (message) => {
+      try {
+        const value = JSON.parse(message.data) as unknown
+        if (isLogEvent(value)) onLog(value)
+      } catch {
+        // Ignore malformed stream data and wait for the next well-formed log event.
+      }
+    })
+    source.addEventListener('error', onError)
+    let closed = false
+    return () => {
+      if (closed) return
+      closed = true
+      source.close()
+    }
+  }
+
   private async requestJSON<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers)
     if (init.body !== undefined) headers.set('Content-Type', 'application/json')
@@ -327,6 +351,16 @@ function isAdminEvent(value: unknown, expectedType: AdminEvent['type']): value i
   }
   if (event.id !== undefined && (typeof event.id !== 'string' || event.id.length > 256)) return false
   return !Number.isNaN(Date.parse(event.time as string))
+}
+
+function isLogEvent(value: unknown): value is LogEvent {
+  if (typeof value !== 'object' || value === null) return false
+  const event = value as Record<string, unknown>
+  if (event.kind !== 'proxy' && event.kind !== 'system' && event.kind !== 'audit') return false
+  if (typeof event.action !== 'string' || event.action.length === 0) return false
+  if (typeof event.success !== 'boolean') return false
+  if (typeof event.time !== 'string' || Number.isNaN(Date.parse(event.time))) return false
+  return true
 }
 
 function apiErrorMessage(status: number): string {

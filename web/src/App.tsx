@@ -19,6 +19,7 @@ import { AdminEvent, APIError, ApiClient, InitialData } from './api'
 import { NodesView } from './NodesView'
 import { NetworkView } from './NetworkView'
 import { LogsView } from './LogsView'
+import { ModalDialog } from './ModalDialog'
 import { ResourcesView } from './ResourcesView'
 import { PanelMode, persistPanelMode, storedPanelMode } from './panelMode'
 
@@ -214,7 +215,7 @@ export function App() {
       </aside>
       <main className="workspace">
         {error && <div className="inline-error" role="alert">{error}</div>}
-        {view === 'overview' && <OverviewView data={data} />}
+        {view === 'overview' && <OverviewView data={data} client={client} />}
         {view === 'nodes' && <NodesView mode={panelMode} client={client} nodes={data.nodes} resources={data.resources} onChange={(nodes) => setData({ ...data, nodes })} />}
         {view === 'resources' && <ResourcesView mode={panelMode} client={client} resources={data.resources} onChange={(resources) => setData({ ...data, resources })} />}
         {view === 'network' && <NetworkView mode={panelMode} client={client} overview={data.overview} onChange={(overview) => setData({ ...data, overview })} onPasswordChanged={() => { setData(null); setPhase('login') }} />}
@@ -325,7 +326,21 @@ function ModeControl({ mode, onChange }: { mode: PanelMode; onChange: (mode: Pan
   )
 }
 
-function OverviewView({ data }: { data: InitialData }) {
+function OverviewView({ data, client }: { data: InitialData; client: ApiClient }) {
+  const [confirmRestart, setConfirmRestart] = useState(false)
+  const [restartPhase, setRestartPhase] = useState<'idle' | 'waiting' | 'restarted' | 'failed'>('idle')
+
+  async function performRestart() {
+    setConfirmRestart(false)
+    setRestartPhase('waiting')
+    try {
+      await client.restartService()
+      const recovered = await waitForServiceHealth()
+      setRestartPhase(recovered ? 'restarted' : 'failed')
+    } catch {
+      setRestartPhase('failed')
+    }
+  }
   const totals = Object.values(data.statistics.nodes).reduce(
     (sum, item) => ({
       active: sum.active + item.active_tcp + item.active_udp,
@@ -339,14 +354,20 @@ function OverviewView({ data }: { data: InitialData }) {
     <section aria-labelledby="page-title">
       <div className="page-heading">
         <div><p className="eyebrow">系統狀態</p><h1 id="page-title">總覽</h1></div>
-        <StatusBadge state={data.overview.health} />
+        <span className="heading-actions">
+          <button className="secondary-button" type="button" disabled={restartPhase === 'waiting'} onClick={() => setConfirmRestart(true)}>{restartPhase === 'waiting' ? '重新啟動中…' : '重新啟動服務'}</button>
+          <StatusBadge state={data.overview.health} />
+        </span>
       </div>
+      {restartPhase === 'restarted' && <p role="status">服務已重新啟動，管理登入階段已重置，請重新整理頁面並重新登入。</p>}
+      {restartPhase === 'failed' && <p role="alert">重新啟動未完成，請以 SSH 執行 systemctl status s12ryt-ipv6 確認服務狀態。</p>}
       <div className="metrics" aria-label="即時統計">
         <Metric label="運行節點" value={`${running} / ${data.nodes.length}`} />
         <Metric label="活躍連線" value={String(totals.active)} />
         <Metric label="累計連線" value={totals.connections.toLocaleString('zh-TW')} />
         <Metric label="錯誤" value={totals.errors.toLocaleString('zh-TW')} tone={totals.errors > 0 ? 'danger' : undefined} />
       </div>
+      {confirmRestart && <ModalDialog title="重新啟動服務" onClose={() => setConfirmRestart(false)} size="medium" footer={(requestClose) => <><button className="secondary-button" type="button" onClick={requestClose}>取消</button><button className="danger-button" type="button" onClick={() => void performRestart()}>確認重新啟動</button></>}><p>將透過 systemctl restart s12ryt-ipv6 重新啟動整個服務。所有代理連線與目前管理連線都會中斷，完成後需要重新登入。確定要繼續嗎？</p></ModalDialog>}
       <div className="overview-grid">
         <section className="data-section" aria-labelledby="nat64-title">
           <div className="section-heading"><h2 id="nat64-title">NAT64</h2><StatusBadge state={data.overview.nat64.state} /></div>
@@ -370,6 +391,19 @@ function OverviewView({ data }: { data: InitialData }) {
       </div>
     </section>
   )
+}
+
+async function waitForServiceHealth(attempts = 30, intervalMs = 2000): Promise<boolean> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await fetch('/healthz')
+      if (response.ok) return true
+    } catch {
+      // 服務仍在重新啟動，稍後重試
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  }
+  return false
 }
 
 function Metric({ label, value, tone }: { label: string; value: string; tone?: 'danger' }) {

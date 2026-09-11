@@ -19,6 +19,7 @@ type operationsLogger interface {
 	Tail(eventlog.Filter, int) ([]eventlog.Event, error)
 	Clear(string) error
 	Write(eventlog.Event) error
+	Subscribe() *eventlog.LogSubscription
 }
 
 type nat64Operations interface {
@@ -49,6 +50,8 @@ type OperationsCoordinatorOptions struct {
 	Connectivity     connectivityTester
 	BaseHealth       func() HealthState
 	DiagnosisTimeout time.Duration
+	Restart          func() error
+	RestartDelay     time.Duration
 }
 
 type OperationsCoordinator struct {
@@ -65,6 +68,8 @@ type OperationsCoordinator struct {
 	connectivity     connectivityTester
 	baseHealth       func() HealthState
 	diagnosisTimeout time.Duration
+	restart          func() error
+	restartDelay     time.Duration
 }
 
 func NewOperationsCoordinator(options OperationsCoordinatorOptions) (*OperationsCoordinator, error) {
@@ -99,12 +104,17 @@ func NewOperationsCoordinator(options OperationsCoordinatorOptions) (*Operations
 	if err := options.Resolver.UpdateEndpoints(endpoints); err != nil {
 		return nil, fmt.Errorf("configure runtime resolvers: %w", err)
 	}
+	restartDelay := options.RestartDelay
+	if options.Restart != nil && restartDelay <= 0 {
+		restartDelay = 1500 * time.Millisecond
+	}
 	return &OperationsCoordinator{
 		logs: options.Logs, stats: options.Stats, saveStats: options.SaveStats,
 		nat64: options.NAT64, saveNAT64: options.SaveNAT64, firewall: options.Firewall, resolver: options.Resolver,
 		resolvers: append([]config.Resolver(nil), options.Resolvers...), saveResolvers: options.SaveResolvers,
 		connectivity: options.Connectivity, baseHealth: options.BaseHealth,
 		diagnosisTimeout: options.DiagnosisTimeout,
+		restart:          options.Restart, restartDelay: restartDelay,
 	}, nil
 }
 
@@ -139,6 +149,44 @@ func (c *OperationsCoordinator) TailLogs(filter eventlog.Filter, limit int) ([]e
 
 func (c *OperationsCoordinator) ClearLogs(actor string) error {
 	return c.logs.Clear(actor)
+}
+
+// ErrRestartUnavailable is returned by RestartService when the coordinator
+// was assembled without a restart function (for example in development).
+var ErrRestartUnavailable = errors.New("service restart is unavailable")
+
+// SubscribeLogs returns a live subscription to the event log stream.
+func (c *OperationsCoordinator) SubscribeLogs() *eventlog.LogSubscription {
+	return c.logs.Subscribe()
+}
+
+// RestartService records an audit event and then asks the platform to restart
+// the whole service after a short delay so the HTTP response can be delivered.
+func (c *OperationsCoordinator) RestartService(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c.restart == nil {
+		return ErrRestartUnavailable
+	}
+	if err := c.logs.Write(eventlog.Event{Kind: eventlog.KindAudit, Action: "service.restart", Actor: "admin", Success: true}); err != nil {
+		return err
+	}
+	restart := c.restart
+	delay := c.restartDelay
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		if err := restart(); err != nil {
+			_ = c.logs.Write(eventlog.Event{Kind: eventlog.KindSystem, Action: "service.restart", Success: false, Error: err.Error()})
+		}
+	}()
+	return nil
 }
 
 func (c *OperationsCoordinator) ResetStatistics(node string) error {

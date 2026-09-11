@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from './App'
@@ -88,6 +88,8 @@ function installFetch(initiallyAuthenticated = false) {
     if (path === '/api/nodes') return jsonResponse(nodes)
     if (path === '/api/resources') return jsonResponse(resources)
     if (path === '/api/stats') return jsonResponse(statistics)
+    if (path === '/api/operations/restart' && method === 'POST') return jsonResponse({ restarting: true }, 202)
+    if (path === '/healthz') return jsonResponse({ state: 'healthy' })
     return jsonResponse({ error: 'not found' }, 404)
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -165,6 +167,26 @@ describe('App', () => {
     const logoutCall = fetchMock.mock.calls.find(([path]) => path === '/api/session/logout')
     expect(logoutCall?.[1]).toEqual(expect.objectContaining({ method: 'POST' }))
     expect(new Headers(logoutCall?.[1]?.headers).get('X-CSRF-Token')).toBe('csrf-only-in-memory')
+  })
+
+  it('在總覽頁經二次確認重新啟動服務並等待恢復', async () => {
+    const user = userEvent.setup()
+    const fetchMock = installFetch(true)
+    render(<App />)
+
+    await screen.findByRole('heading', { name: '總覽' })
+    await user.click(screen.getByRole('button', { name: '重新啟動服務' }))
+    const dialog = screen.getByRole('dialog', { name: '重新啟動服務' })
+    expect(dialog).toHaveTextContent('systemctl')
+    expect(fetchMock.mock.calls.filter(([path]) => path === '/api/operations/restart')).toHaveLength(0)
+
+    await user.click(within(dialog).getByRole('button', { name: '確認重新啟動' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/operations/restart', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ confirm: true }),
+    })))
+    expect(await screen.findByText('服務已重新啟動，管理登入階段已重置，請重新整理頁面並重新登入。')).toBeInTheDocument()
+    expect(fetchMock.mock.calls.some(([path]) => path === '/healthz')).toBe(true)
   })
 
   it('loads an existing session and persists an explicit theme choice', async () => {

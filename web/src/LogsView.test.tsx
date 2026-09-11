@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient, LogEvent, StatisticsSnapshot } from './api'
@@ -25,7 +25,7 @@ describe('LogsView', () => {
   it('loads metadata-only logs and applies encoded filters', async () => {
     const user = userEvent.setup()
     const get = vi.fn().mockResolvedValue(events)
-    render(<LogsView mode="advanced" client={{ get, mutate: vi.fn() } as Pick<ApiClient, 'get' | 'mutate'>} statistics={statistics} onStatisticsChange={vi.fn()} />)
+    render(<LogsView mode="advanced" client={{ get, mutate: vi.fn(), openLogStream: () => () => undefined } as Pick<ApiClient, 'get' | 'mutate' | 'openLogStream'>} statistics={statistics} onStatisticsChange={vi.fn()} />)
 
     await waitFor(() => expect(get).toHaveBeenCalledWith('/api/logs?limit=200'))
     expect(await screen.findByText('example.com:443')).toBeInTheDocument()
@@ -47,7 +47,7 @@ describe('LogsView', () => {
     const user = userEvent.setup()
     const get = vi.fn().mockResolvedValueOnce(events).mockResolvedValueOnce([events[1]])
     const mutate = vi.fn().mockResolvedValue(undefined)
-    render(<LogsView mode="advanced" client={{ get, mutate } as Pick<ApiClient, 'get' | 'mutate'>} statistics={statistics} onStatisticsChange={vi.fn()} />)
+    render(<LogsView mode="advanced" client={{ get, mutate, openLogStream: () => () => undefined } as Pick<ApiClient, 'get' | 'mutate' | 'openLogStream'>} statistics={statistics} onStatisticsChange={vi.fn()} />)
     await screen.findByText('example.com:443')
 
     await user.click(screen.getByRole('button', { name: '清除全部日誌' }))
@@ -70,7 +70,7 @@ describe('LogsView', () => {
     const get = vi.fn().mockResolvedValueOnce([]).mockResolvedValue(refreshed)
     const mutate = vi.fn().mockResolvedValue(undefined)
     const onStatisticsChange = vi.fn()
-    render(<LogsView mode="advanced" client={{ get, mutate } as Pick<ApiClient, 'get' | 'mutate'>} statistics={statistics} onStatisticsChange={onStatisticsChange} />)
+    render(<LogsView mode="advanced" client={{ get, mutate, openLogStream: () => () => undefined } as Pick<ApiClient, 'get' | 'mutate' | 'openLogStream'>} statistics={statistics} onStatisticsChange={onStatisticsChange} />)
     await waitFor(() => expect(get).toHaveBeenCalledWith('/api/logs?limit=200'))
 
     const row = screen.getByRole('row', { name: /edge-1/ })
@@ -92,7 +92,7 @@ describe('LogsView', () => {
 
   it('retains all log filters but hides destructive maintenance in basic mode', async () => {
     const get = vi.fn().mockResolvedValue(events)
-    render(<LogsView mode="basic" client={{ get, mutate: vi.fn() } as Pick<ApiClient, 'get' | 'mutate'>} statistics={statistics} onStatisticsChange={vi.fn()} />)
+    render(<LogsView mode="basic" client={{ get, mutate: vi.fn(), openLogStream: () => () => undefined } as Pick<ApiClient, 'get' | 'mutate' | 'openLogStream'>} statistics={statistics} onStatisticsChange={vi.fn()} />)
 
     await screen.findByText('example.com:443')
     for (const label of ['事件類型', '節點篩選', '動作篩選', '結果', '筆數']) {
@@ -103,5 +103,34 @@ describe('LogsView', () => {
     expect(screen.queryByRole('button', { name: '歸零 edge-1 統計' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '歸零全部統計' })).not.toBeInTheDocument()
     expect(screen.queryByText('操作')).not.toBeInTheDocument()
+  })
+
+  it('在即時模式中訂閱並顯示新事件，離開時關閉串流', async () => {
+    const user = userEvent.setup()
+    const get = vi.fn().mockResolvedValue(events)
+    let streamHandler: ((event: LogEvent) => void) | undefined
+    const close = vi.fn()
+    const openLogStream = vi.fn().mockImplementation((onLog: (event: LogEvent) => void) => {
+      streamHandler = onLog
+      return close
+    })
+    render(<LogsView mode="advanced" client={{ get, mutate: vi.fn(), openLogStream } as Pick<ApiClient, 'get' | 'mutate' | 'openLogStream'>} statistics={statistics} onStatisticsChange={vi.fn()} />)
+
+    await screen.findByText('example.com:443')
+    expect(openLogStream).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: '即時日誌' }))
+    expect(openLogStream).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      streamHandler?.({ time: '2026-09-11T12:00:00Z', kind: 'proxy', action: 'connection.closed', success: false, error: 'proxy connection failed: fd limit reached' })
+    })
+    expect(await screen.findByText('proxy connection failed: fd limit reached')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '清空畫面' }))
+    expect(screen.queryByText('proxy connection failed: fd limit reached')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '結束即時日誌' }))
+    expect(close).toHaveBeenCalledTimes(1)
   })
 })

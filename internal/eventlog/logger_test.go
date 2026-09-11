@@ -369,6 +369,107 @@ func TestLoggerTailValidatesLimit(t *testing.T) {
 	}
 }
 
+func TestLoggerBroadcastsWrittenEventsToSubscribers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	logger, err := New(path, 1024*1024, 5, nil, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+	logger.RegisterSecret("top-secret-password")
+	sub := logger.Subscribe()
+	defer sub.Close()
+
+	err = logger.Write(Event{
+		Kind: KindProxy, Action: "connection.closed", Node: "edge-a", Success: false,
+		Error: "proxy connection failed: secret top-secret-password leaked",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = logger.Write(Event{Kind: KindAudit, Action: "log.clear", Actor: "admin", Success: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case event := <-sub.Events:
+		if event.Kind != KindProxy || event.Action != "connection.closed" {
+			t.Fatalf("first broadcast = %#v", event)
+		}
+		if event.Error != "proxy connection failed: secret [REDACTED] leaked" {
+			t.Fatalf("broadcast must carry the redacted error, got %q", event.Error)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first broadcast event")
+	}
+	select {
+	case event := <-sub.Events:
+		if event.Kind != KindAudit || event.Action != "log.clear" {
+			t.Fatalf("second broadcast = %#v", event)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second broadcast event")
+	}
+}
+
+func TestLoggerBroadcastDoesNotBlockOnSlowSubscriber(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	logger, err := New(path, 1024*1024, 5, nil, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+	sub := logger.Subscribe()
+	defer sub.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			if err := logger.Write(Event{Kind: KindProxy, Action: "connect", Node: "edge-a"}); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Write blocked behind a subscriber that never drains its channel")
+	}
+	// The slow subscriber keeps receiving the freshest events; nothing is lost
+	// silently because the broadcast always drops the oldest entry to make room.
+	select {
+	case event := <-sub.Events:
+		if event.Kind != KindProxy {
+			t.Fatalf("stale event kind = %q", event.Kind)
+		}
+	default:
+		t.Fatal("expected at least one buffered event for the slow subscriber")
+	}
+}
+
+func TestLoggerCloseClosesSubscriptions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	logger, err := New(path, 1024*1024, 5, nil, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := logger.Subscribe()
+	if err := logger.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case _, ok := <-sub.Events:
+		if ok {
+			t.Fatal("subscription channel should be closed after logger close")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for subscription channel to close")
+	}
+}
+
 func TestLoggerUnregisterSecretKeepsRedactionUntilLastReference(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	logger, err := New(path, 1024*1024, 5, nil, nil)

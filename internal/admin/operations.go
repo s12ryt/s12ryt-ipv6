@@ -40,6 +40,7 @@ type OperationsService interface {
 	SetManualNAT64(context.Context, netip.Prefix) (dns64.NAT64Status, error)
 	UpdateResolvers(context.Context, []config.Resolver) error
 	TestConnectivity(context.Context) ([]ConnectivityCheck, error)
+	RestartService(context.Context) error
 }
 
 type nat64StatusDTO struct {
@@ -131,6 +132,25 @@ func (s *HTTPServer) SetOperationsService(service OperationsService) error {
 		}
 		s.publishOperationsEvent("log", "all", "cleared")
 		response.WriteHeader(http.StatusNoContent)
+	})))
+	s.mux.Handle("POST /api/operations/restart", s.RequireMutation(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		var input struct {
+			Confirm bool `json:"confirm"`
+		}
+		if err := decodeJSON(response, request, &input); err != nil || !input.Confirm {
+			writeAPIError(response, http.StatusUnprocessableEntity, "service restart confirmation required")
+			return
+		}
+		if err := service.RestartService(request.Context()); err != nil {
+			if errors.Is(err, ErrRestartUnavailable) {
+				writeAPIError(response, http.StatusServiceUnavailable, "service restart is unavailable")
+				return
+			}
+			writeOperationsError(response)
+			return
+		}
+		s.publishOperationsEvent("service", "all", "restarting")
+		writeJSON(response, http.StatusAccepted, map[string]bool{"restarting": true})
 	})))
 	s.mux.Handle("POST /api/network/test", s.RequireMutation(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if err := decodeEmptyJSON(response, request); err != nil {

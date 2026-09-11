@@ -54,6 +54,49 @@ type Logger struct {
 	secrets      []string
 	secretCounts map[string]int
 	closed       bool
+	// subMu guards subscribers independently so Subscribe and Close on the
+	// consumer side never contend with log writes beyond the notify step.
+	// Lock order is always mu -> subMu.
+	subMu       sync.Mutex
+	subscribers map[uint64]chan Event
+	nextSubID   uint64
+}
+
+// LogSubscription streams every persisted event (already redacted) to one
+// consumer. Close must be called when the consumer stops reading.
+type LogSubscription struct {
+	Events    <-chan Event
+	closeOnce sync.Once
+	remove    func()
+}
+
+// Close releases the subscription and closes its channel.
+func (s *LogSubscription) Close() {
+	s.closeOnce.Do(func() { s.remove() })
+}
+
+// Subscribe returns a subscription that receives every event the logger
+// persists, after redaction. The channel is buffered; when a consumer falls
+// behind, the oldest queued event is dropped to make room for fresh ones, so
+// a slow reader can never block log writes.
+func (l *Logger) Subscribe() *LogSubscription {
+	l.subMu.Lock()
+	defer l.subMu.Unlock()
+	if l.subscribers == nil {
+		l.subscribers = make(map[uint64]chan Event)
+	}
+	l.nextSubID++
+	id := l.nextSubID
+	channel := make(chan Event, 64)
+	l.subscribers[id] = channel
+	return &LogSubscription{Events: channel, remove: func() {
+		l.subMu.Lock()
+		defer l.subMu.Unlock()
+		if current, ok := l.subscribers[id]; ok {
+			delete(l.subscribers, id)
+			close(current)
+		}
+	}}
 }
 
 func New(path string, maxBytes int64, backups int, stdout io.Writer, now func() time.Time) (*Logger, error) {
@@ -261,7 +304,42 @@ func (l *Logger) writeLocked(event Event) error {
 			return fmt.Errorf("write stdout log: %w", err)
 		}
 	}
+	l.notifySubscribersLocked(event)
 	return nil
+}
+
+// notifySubscribersLocked broadcasts an event (already redacted) to every live
+// subscriber without blocking: a full channel drops its oldest queued event to
+// make room for the fresh one. Callers must hold l.mu; this helper takes
+// subMu internally (lock order mu -> subMu).
+func (l *Logger) notifySubscribersLocked(event Event) {
+	l.subMu.Lock()
+	defer l.subMu.Unlock()
+	for _, channel := range l.subscribers {
+		select {
+		case channel <- event:
+		default:
+			select {
+			case <-channel:
+			default:
+			}
+			select {
+			case channel <- event:
+			default:
+			}
+		}
+	}
+}
+
+// closeSubscribersLocked closes and forgets every live subscription. Callers
+// must hold l.mu.
+func (l *Logger) closeSubscribersLocked() {
+	l.subMu.Lock()
+	defer l.subMu.Unlock()
+	for id, channel := range l.subscribers {
+		delete(l.subscribers, id)
+		close(channel)
+	}
 }
 
 func (l *Logger) Clear(actor string) (resultErr error) {
@@ -308,6 +386,7 @@ func (l *Logger) Close() error {
 		return nil
 	}
 	l.closed = true
+	l.closeSubscribersLocked()
 	if l.file == nil {
 		return nil
 	}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/s12ryt/s12ryt-ipv6/internal/auth"
+	"github.com/s12ryt/s12ryt-ipv6/internal/eventlog"
 	"github.com/s12ryt/s12ryt-ipv6/internal/secret"
 )
 
@@ -60,6 +61,8 @@ type HTTPServer struct {
 	operationsSet bool
 	discoverySet  bool
 	frontendSet   bool
+	sseHeartbeat  time.Duration
+	logStreamSet  bool
 }
 
 func NewHTTPServer(options HTTPServerOptions) (*HTTPServer, error) {
@@ -83,11 +86,12 @@ func NewHTTPServer(options HTTPServerOptions) (*HTTPServer, error) {
 		return nil, err
 	}
 	server := &HTTPServer{
-		passwords: options.Passwords,
-		sessions:  options.Sessions,
-		limiter:   options.Limiter,
-		health:    options.Health,
-		events:    options.Events,
+		passwords:    options.Passwords,
+		sessions:     options.Sessions,
+		limiter:      options.Limiter,
+		health:       options.Health,
+		events:       options.Events,
+		sseHeartbeat: options.SSEHeartbeat,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.handleHealth)
@@ -103,6 +107,27 @@ func NewHTTPServer(options HTTPServerOptions) (*HTTPServer, error) {
 
 func (s *HTTPServer) Handler() http.Handler {
 	return s.handler
+}
+
+// SetLogStreamSource mounts GET /api/logs/stream, which streams live event
+// log records over server-sent events. Each request gets its own
+// subscription, so a slow reader only drops its own events.
+func (s *HTTPServer) SetLogStreamSource(subscribe func() *eventlog.LogSubscription) error {
+	if subscribe == nil {
+		return errors.New("log stream source is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.logStreamSet {
+		return errors.New("log stream source is already registered")
+	}
+	stream, err := NewLogStreamHandler(subscribe, s.sseHeartbeat)
+	if err != nil {
+		return err
+	}
+	s.logStreamSet = true
+	s.mux.Handle("GET /api/logs/stream", s.RequireSession(stream))
+	return nil
 }
 
 func (s *HTTPServer) RequireSession(next http.Handler) http.Handler {
