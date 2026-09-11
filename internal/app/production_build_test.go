@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -349,5 +350,82 @@ func TestPreparedControlListenerPreparesBeforeListening(t *testing.T) {
 	})
 	if !errors.Is(err, prepareErr) || called {
 		t.Fatalf("prepare failure = %v, listen called = %v", err, called)
+	}
+}
+
+func TestComponentDegradedMessageIncludesComponentAndCause(t *testing.T) {
+	message := componentDegradedMessage("host-addresses", errors.New("netlink receive failed"))
+	if message != "component degraded: host-addresses: netlink receive failed" {
+		t.Fatalf("componentDegradedMessage() = %q", message)
+	}
+}
+
+func TestComponentDegradedMessageTruncatesLongCause(t *testing.T) {
+	cause := errors.New(strings.Repeat("x", 500))
+	message := componentDegradedMessage("service", cause)
+	if !strings.HasPrefix(message, "component degraded: service: ") {
+		t.Fatalf("componentDegradedMessage() prefix = %q", message)
+	}
+	if !strings.HasSuffix(message, "...") {
+		t.Fatalf("componentDegradedMessage() suffix = %q", message)
+	}
+	if detail := strings.TrimPrefix(strings.TrimPrefix(message, "component degraded: service: "), ""); len(detail) > 200+len("...") {
+		t.Fatalf("componentDegradedMessage() detail length = %d, want <= %d", len(detail), 200+len("..."))
+	}
+}
+
+func TestBuildProductionRecordsComponentAndCauseInDegradedEvent(t *testing.T) {
+	directory := t.TempDir()
+	paths, err := NewDataPaths(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frontend := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<!doctype html><title>s12ryt</title>")}}
+	platform := productionTestPlatform(frontend)
+	platform.hostAddresses = func() ([]netip.Addr, error) {
+		return nil, errors.New("netlink receive failed")
+	}
+
+	service, err := buildProduction(
+		ProductionOptions{DataDirectory: directory, Stdout: io.Discard},
+		platform,
+	)
+	if err != nil {
+		t.Fatalf("buildProduction() error = %v", err)
+	}
+	built := service.(*productionService)
+	t.Cleanup(func() { _ = built.close() })
+
+	content, err := os.ReadFile(paths.EventLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, line := range strings.Split(string(content), "\n") {
+		if line == "" {
+			continue
+		}
+		var record struct {
+			Action string `json:"action"`
+			Error  string `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("unmarshal event %q: %v", line, err)
+		}
+		if record.Action != "component.degraded" {
+			continue
+		}
+		found = true
+		rest, ok := strings.CutPrefix(record.Error, "component degraded: ")
+		if !ok {
+			t.Fatalf("degraded event error = %q, want %q prefix", record.Error, "component degraded: ")
+		}
+		component, detail, foundSeparator := strings.Cut(rest, ": ")
+		if !foundSeparator || component == "" || detail == "" {
+			t.Fatalf("degraded event error = %q, want \"component: cause\" detail", record.Error)
+		}
+	}
+	if !found {
+		t.Fatal("no component.degraded event recorded")
 	}
 }

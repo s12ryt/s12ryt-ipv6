@@ -100,6 +100,14 @@ func BuildProduction(options ProductionOptions) (ProductionService, error) {
 	})
 }
 
+// componentDegradedMessage builds the recorded error text for a degraded
+// component event. The component identifier is an internal constant and the
+// cause is truncated by truncateErrorDetail; the eventlog redaction pass still
+// applies to the final message.
+func componentDegradedMessage(component string, cause error) string {
+	return "component degraded: " + component + ": " + truncateErrorDetail(cause.Error())
+}
+
 func buildProduction(options ProductionOptions, platform productionPlatform) (_ ProductionService, err error) {
 	if strings.TrimSpace(options.DataDirectory) == "" || options.Stdout == nil {
 		return nil, errors.New("production data directory and stdout are required")
@@ -137,7 +145,7 @@ func buildProduction(options ProductionOptions, platform productionPlatform) (_ 
 			return
 		}
 		health.ReportDegraded(component, cause)
-		_ = logger.Write(eventlog.Event{Kind: eventlog.KindSystem, Action: "component.degraded", Success: false, Error: "component degraded"})
+		_ = logger.Write(eventlog.Event{Kind: eventlog.KindSystem, Action: "component.degraded", Success: false, Error: componentDegradedMessage(component, cause)})
 	}
 
 	key, _, err := secret.LoadOrCreateMasterKey(paths.MasterKey, nil)
