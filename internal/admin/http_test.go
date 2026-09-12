@@ -430,16 +430,18 @@ func TestHTTPServerHealthIsPublicAndOnlyExposesState(t *testing.T) {
 	request.RemoteAddr = "192.0.2.1:1234"
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusOK || response.Body.String() != "{\"status\":\"degraded\"}\n" {
+	if response.Code != http.StatusOK {
 		t.Fatalf("degraded health response = %d %q", response.Code, response.Body.String())
 	}
+	assertHealthPayload(t, response, "degraded")
 
 	state = HealthUnhealthy
 	response = httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusServiceUnavailable || response.Body.String() != "{\"status\":\"unhealthy\"}\n" {
+	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unhealthy health response = %d %q", response.Code, response.Body.String())
 	}
+	assertHealthPayload(t, response, "unhealthy")
 }
 
 func TestHTTPServerRequiresAuthenticationForEventStream(t *testing.T) {
@@ -491,5 +493,22 @@ func TestHTTPServerRejectsInvalidOptions(t *testing.T) {
 	response := performLogin(t, server.Handler(), "192.0.2.1:1234", "manager.example:34466", "anything-at-least-long")
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("backend error login status = %d, want 500", response.Code)
+	}
+}
+
+func assertHealthPayload(t *testing.T, response *httptest.ResponseRecorder, wantStatus string) {
+	t.Helper()
+	var payload struct {
+		Status    string `json:"status"`
+		StartedAt string `json:"started_at"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("health response body %q: %v", response.Body.String(), err)
+	}
+	if payload.Status != wantStatus {
+		t.Fatalf("health status = %q, want %q", payload.Status, wantStatus)
+	}
+	if _, err := time.Parse(time.RFC3339, payload.StartedAt); err != nil {
+		t.Fatalf("health started_at = %q, want RFC3339 timestamp: %v", payload.StartedAt, err)
 	}
 }

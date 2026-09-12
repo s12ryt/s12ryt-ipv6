@@ -361,7 +361,7 @@ func buildProduction(options ProductionOptions, platform productionPlatform) (_ 
 		Resolver: resolver, Resolvers: settings.Resolvers, SaveResolvers: configuration.SaveResolvers,
 		Connectivity: connectivity, BaseHealth: health.State, DiagnosisTimeout: 10 * time.Second,
 		Restart: func() error {
-			return exec.Command("systemctl", "restart", "s12ryt-ipv6").Run()
+			return exec.Command("systemctl", "restart", "--no-block", "s12ryt-ipv6").Run()
 		},
 		RestartDelay: 1500 * time.Millisecond,
 	})

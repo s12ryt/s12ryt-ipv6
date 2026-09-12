@@ -177,11 +177,10 @@ func (c *OperationsCoordinator) RestartService(ctx context.Context) error {
 	go func() {
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-			return
-		case <-timer.C:
-		}
+		// The request context must not gate the restart: the caller may close
+		// the browser tab as soon as the 202 response arrives, but the delayed
+		// restart invocation still has to run.
+		<-timer.C
 		if err := restart(); err != nil {
 			_ = c.logs.Write(eventlog.Event{Kind: eventlog.KindSystem, Action: "service.restart", Success: false, Error: err.Error()})
 		}

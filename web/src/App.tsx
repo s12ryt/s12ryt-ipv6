@@ -334,8 +334,9 @@ function OverviewView({ data, client }: { data: InitialData; client: ApiClient }
     setConfirmRestart(false)
     setRestartPhase('waiting')
     try {
+      const previousStartedAt = await fetchStartedAt()
       await client.restartService()
-      const recovered = await waitForServiceHealth()
+      const recovered = await waitForServiceRestart(previousStartedAt)
       setRestartPhase(recovered ? 'restarted' : 'failed')
     } catch {
       setRestartPhase('failed')
@@ -393,13 +394,28 @@ function OverviewView({ data, client }: { data: InitialData; client: ApiClient }
   )
 }
 
-async function waitForServiceHealth(attempts = 30, intervalMs = 2000): Promise<boolean> {
+async function fetchStartedAt(): Promise<string | undefined> {
+  try {
+    const response = await fetch('/healthz')
+    if (!response.ok) return undefined
+    const body = (await response.json()) as { started_at?: string }
+    return typeof body.started_at === 'string' ? body.started_at : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function waitForServiceRestart(previousStartedAt: string | undefined, attempts = 40, intervalMs = 2000): Promise<boolean> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       const response = await fetch('/healthz')
-      if (response.ok) return true
+      if (response.ok) {
+        const body = (await response.json()) as { started_at?: string }
+        const startedAt = typeof body.started_at === 'string' ? body.started_at : undefined
+        if (previousStartedAt === undefined || startedAt === undefined || startedAt !== previousStartedAt) return true
+      }
     } catch {
-      // 服務仍在重新啟動，稍後重試
+      // 服務正在重新啟動，稍後重試
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs))
   }

@@ -89,7 +89,11 @@ function installFetch(initiallyAuthenticated = false) {
     if (path === '/api/resources') return jsonResponse(resources)
     if (path === '/api/stats') return jsonResponse(statistics)
     if (path === '/api/operations/restart' && method === 'POST') return jsonResponse({ restarting: true }, 202)
-    if (path === '/healthz') return jsonResponse({ state: 'healthy' })
+    if (path === '/healthz') {
+      const restartCalls = fetchMock.mock.calls.filter(([p]) => p === '/api/operations/restart').length
+      const startedAt = restartCalls > 0 ? '2026-09-12T00:00:02Z' : '2026-09-12T00:00:01Z'
+      return jsonResponse({ status: 'healthy', started_at: startedAt })
+    }
     return jsonResponse({ error: 'not found' }, 404)
   })
   vi.stubGlobal('fetch', fetchMock)

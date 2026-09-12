@@ -40,43 +40,43 @@ func (l *fakeOperationsLogger) Write(event eventlog.Event) error {
 	return nil
 }
 
-func TestOperationsCoordinatorRestartService(t *testing.T) {
-	build := func(logger *fakeOperationsLogger, restart func() error, delay time.Duration) *OperationsCoordinator {
-		queryer := &fakeAdminDNSQueryer{}
-		resolver, err := dns64.NewResolver([]dns64.Endpoint{{
-			Name: "old", Address: netip.MustParseAddr("2606:4700:4700::64"), Port: 853, ServerName: "cloudflare-dns.com",
-		}}, queryer, time.Now)
-		if err != nil {
-			t.Fatal(err)
-		}
-		service, err := NewOperationsCoordinator(OperationsCoordinatorOptions{
-			Logs: logger, Stats: stats.NewRegistry(),
-			SaveStats:        func(stats.Snapshot) error { return nil },
-			NAT64:            &fakeNAT64Operations{},
-			SaveNAT64:        func(netip.Prefix) error { return nil },
-			Firewall:         &fakeFirewallDiagnoser{},
-			Resolver:         resolver,
-			Resolvers:        []config.Resolver{{Name: "old", Address: "2606:4700:4700::64", Port: 853, ServerName: "cloudflare-dns.com", Enabled: true}},
-			SaveResolvers:    func([]config.Resolver) error { return nil },
-			Connectivity:     &fakeConnectivityTester{},
-			BaseHealth:       func() HealthState { return HealthHealthy },
-			DiagnosisTimeout: time.Second,
-			Restart:          restart,
-			RestartDelay:     delay,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return service
+func buildRestartCoordinator(t *testing.T, logger *fakeOperationsLogger, restart func() error, delay time.Duration) *OperationsCoordinator {
+	queryer := &fakeAdminDNSQueryer{}
+	resolver, err := dns64.NewResolver([]dns64.Endpoint{{
+		Name: "old", Address: netip.MustParseAddr("2606:4700:4700::64"), Port: 853, ServerName: "cloudflare-dns.com",
+	}}, queryer, time.Now)
+	if err != nil {
+		t.Fatal(err)
 	}
+	service, err := NewOperationsCoordinator(OperationsCoordinatorOptions{
+		Logs: logger, Stats: stats.NewRegistry(),
+		SaveStats:        func(stats.Snapshot) error { return nil },
+		NAT64:            &fakeNAT64Operations{},
+		SaveNAT64:        func(netip.Prefix) error { return nil },
+		Firewall:         &fakeFirewallDiagnoser{},
+		Resolver:         resolver,
+		Resolvers:        []config.Resolver{{Name: "old", Address: "2606:4700:4700::64", Port: 853, ServerName: "cloudflare-dns.com", Enabled: true}},
+		SaveResolvers:    func([]config.Resolver) error { return nil },
+		Connectivity:     &fakeConnectivityTester{},
+		BaseHealth:       func() HealthState { return HealthHealthy },
+		DiagnosisTimeout: time.Second,
+		Restart:          restart,
+		RestartDelay:     delay,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
+}
 
-	if err := build(&fakeOperationsLogger{}, nil, 0).RestartService(context.Background()); !errors.Is(err, ErrRestartUnavailable) {
+func TestOperationsCoordinatorRestartService(t *testing.T) {
+	if err := buildRestartCoordinator(t, &fakeOperationsLogger{}, nil, 0).RestartService(context.Background()); !errors.Is(err, ErrRestartUnavailable) {
 		t.Fatalf("RestartService() without restart hook = %v, want ErrRestartUnavailable", err)
 	}
 
 	restarted := make(chan struct{})
 	logger := &fakeOperationsLogger{}
-	service := build(logger, func() error { close(restarted); return nil }, 10*time.Millisecond)
+	service := buildRestartCoordinator(t, logger, func() error { close(restarted); return nil }, 10*time.Millisecond)
 	if err := service.RestartService(context.Background()); err != nil {
 		t.Fatalf("RestartService() error = %v", err)
 	}
@@ -93,6 +93,22 @@ func TestOperationsCoordinatorRestartService(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("audit events = %#v, want service.restart audit", logger.events)
+	}
+}
+
+func TestOperationsCoordinatorRestartSurvivesRequestCancellation(t *testing.T) {
+	restarted := make(chan struct{})
+	service := buildRestartCoordinator(t, &fakeOperationsLogger{}, func() error { close(restarted); return nil }, 10*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := service.RestartService(ctx); err != nil {
+		t.Fatalf("RestartService() error = %v", err)
+	}
+	cancel()
+	select {
+	case <-restarted:
+	case <-time.After(time.Second):
+		t.Fatal("restart hook was not invoked after request cancellation")
 	}
 }
 

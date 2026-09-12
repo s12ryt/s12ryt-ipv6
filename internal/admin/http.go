@@ -53,6 +53,7 @@ type HTTPServer struct {
 	sessions      *auth.SessionManager
 	limiter       *auth.LoginLimiter
 	health        func() HealthState
+	startedAt     time.Time
 	events        *EventHub
 	mux           *http.ServeMux
 	handler       http.Handler
@@ -92,6 +93,7 @@ func NewHTTPServer(options HTTPServerOptions) (*HTTPServer, error) {
 		health:       options.Health,
 		events:       options.Events,
 		sseHeartbeat: options.SSEHeartbeat,
+		startedAt:    time.Now(),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.handleHealth)
@@ -301,7 +303,7 @@ func (s *HTTPServer) handleHealth(response http.ResponseWriter, _ *http.Request)
 		state = HealthUnhealthy
 		status = http.StatusServiceUnavailable
 	}
-	writeJSON(response, status, map[string]HealthState{"status": state})
+	writeJSON(response, status, map[string]string{"status": string(state), "started_at": s.startedAt.UTC().Format(time.RFC3339)})
 }
 
 func decodeJSON(response http.ResponseWriter, request *http.Request, destination any) error {
