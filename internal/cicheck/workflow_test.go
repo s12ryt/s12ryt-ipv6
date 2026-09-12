@@ -120,6 +120,26 @@ func TestCIEnforcesQualityAndSupplyChainGates(t *testing.T) {
 	}
 }
 
+func TestCIGofmtCheckAvoidsUnquotedCommandSubstitution(t *testing.T) {
+	ci := loadWorkflows(t)["ci.yml"]
+	if ci == nil {
+		t.Fatal("ci.yml is missing")
+	}
+
+	for _, job := range ci.config.Jobs {
+		for _, step := range job.Steps {
+			if step.Name != "Check gofmt" {
+				continue
+			}
+			if strings.Contains(step.Run, "gofmt -l $(") {
+				t.Fatal("Check gofmt must not pass an unquoted command substitution to gofmt (ShellCheck SC2046)")
+			}
+			return
+		}
+	}
+	t.Fatal("CI Check gofmt step is missing")
+}
+
 func TestReleaseRepeatsCriticalVerificationBeforePublishing(t *testing.T) {
 	workflows := loadWorkflows(t)
 	release := workflows["release.yml"]
