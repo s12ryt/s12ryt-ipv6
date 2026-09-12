@@ -302,3 +302,11 @@
 - 產物：checksums.txt、s12ryt-ipv6_1.0.6_Linux_x86_64(+tar.gz)、Linux_arm64(+tar.gz)
 - 內容：v0.1.9→v1.0.6 打包 O1 錯誤分類+F1 LimitNOFILE+O3 degraded 細節+Web 重啟按鈕+即時日誌
 - VPS 升級路徑：重跑一鍵安裝（install.sh）同時更新 binary 與 systemd unit
+## 2026-09-11 restart 三 bug 修復（第十八輪補記）
+
+- 觸發：用戶質疑「restart按鈕真的可以正常生效嗎」→推演三 bug：ctx cancel 殺 restart（高）/systemctl 被 SIGTERM（中）/過早報成功（高）＋mock 契約不符（低）
+- 編輯：internal/admin/operations_service.go（timer-only）、internal/admin/http.go（startedAt+handleHealth started_at）、internal/app/production_build.go（--no-block）、web/src/App.tsx（fetchStartedAt+waitForServiceRestart 40×2s）、web/src/App.test.tsx（兩階段 mock）
+- 測試：operations_service_test.go（buildRestartCoordinator 包級 helper+TestOperationsCoordinatorRestartSurvivesRequestCancellation）、http_test.go（assertHealthPayload）
+- 驗證：go test ./... EXIT=0（15 包）、vet=0、gofmt clean；vitest 77 tests EXIT=0、eslint 0、vite build 0
+- 教訓：[System.IO.File]::WriteAllLines 產 CRLF 需手動 LF normalize（gofmt/eslint 報錯）；bash command 內嵌 tab 會失真→改 .ps1 檔+write 工具+[char]9；pwsh 單引號 here-string 內反引號非跳脫（Go 源碼跳脫字串直接字面寫入）
+- 待辦：發新 Release 取代 v1.0.6（版本號待用戶指定）

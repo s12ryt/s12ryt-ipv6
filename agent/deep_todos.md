@@ -274,3 +274,11 @@
 - [x] 前端：api.restartService/openLogStream（isLogEvent 校驗）；LogsView 即時模式（500 上限／清空畫面）；總覽重啟按鈕（二次確認＋/healthz 輪詢）
 - [x] 全套驗證：go 15 packages＋vet＋gofmt 全綠；vitest 77 tests＋lint＋build 全綠
 - [ ] 待 VPS 部署新版本後實測重啟按鈕與即時日誌
+### 第十八輪補記：restart 按鈕三 bug 修復（用戶質疑後推演）
+
+- [x] Bug1：RestartService go func 移除 ctx.Done 分支（只等 timer）——request 斷線不再取消 restart；TDD cancellation 測試 RED→GREEN
+- [x] Bug2：production restartFn 加 systemctl --no-block（避免被同 cgroup SIGTERM 殺）
+- [x] Bug3：/healthz 加 started_at（RFC3339）＋前端 waitForServiceRestart 以 started_at 改變判定新進程（40×2s）；fetchStartedAt 記錄舊值；缺欄位降級為舊行為
+- [x] Bug4：App.test /healthz mock 改 {status, started_at} 兩階段；http_test assertHealthPayload helper
+- [x] 驗證：go test ./... 15 包全綠+vet+gofmt clean；vitest 77 全綠+lint+build
+- [ ] 待發新 Release（v1.0.6 含 Bug1/3，重啟按鈕不可靠）；版本號待用戶指定

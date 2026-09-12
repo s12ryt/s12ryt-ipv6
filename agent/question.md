@@ -792,3 +792,10 @@ TDD 證據：
 
 ### 部署注意
 - VPS 需升級新 binary 後 Web 重啟按鈕與即時日誌才可用（v0.1.9 舊版無此二端點）
+### 40.1 restart 按鈕三 bug 修復（2026-09-11，用戶質疑「restart按鈕真的可以正常生效嗎」後推演發現）
+
+1. **Bug1（高）restart 被 request cancellation 殺死**：RestartService 的 go func 曾 select ctx.Done——用戶收 202 後關 tab→request ctx cancel→1.5s 後的 systemctl 永不執行。修：go func 內只等 timer（`<-timer.C`），ctx 僅作入口檢查；request 斷線不得阻擋 restart。TDD：TestOperationsCoordinatorRestartSurvivesRequestCancellation（cancel 後 restartFn 仍被喚）
+2. **Bug2（中）systemctl 阻塞式被同 cgroup SIGTERM 殺**：systemd stop 預設 KillMode=control-group 會殺 cgroup 內所有進程（含 fork 的 systemctl 子進程），阻塞式 restart 可能中途被殺誤報失敗事件。修：production restartFn 加 `--no-block`（排入作業即返回）
+3. **Bug3（高）前端過早報「已重新啟動」**：舊 waitForServiceHealth 只看 /healthz 200——restartService resolve 後舊進程 1.5s delay+優雅關閉期間仍 200→第一次輪詢即誤報成功。修：/healthz 回應加 `started_at`（RFC3339，HTTPServer.startedAt 於 NewHTTPServer 取 time.Now()）；前端 performRestart 先記 old startedAt（fetchStartedAt），waitForServiceRestart(old, 40×2s) 輪詢直到 started_at 改變（新進程）或 old 未知時任何恢復即成功；向後相容：回應缺 started_at 視為成功（舊後端降級行為）
+4. **Bug4（低）App.test mock 契約不符**：/healthz mock 曾回 `{state:'healthy'}`（後端實回 `{"status":...}`）；改兩階段 `{status:'healthy', started_at:...}`（restart POST 前返 old、後返 new）——同時充當 Bug3 happy-path 驗收（old→new 才成功）
+- http_test.go 斷言升級：精確字串比對改 assertHealthPayload helper（json.Unmarshal{status,started_at}+RFC3339 解析）
