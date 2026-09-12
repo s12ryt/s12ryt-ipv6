@@ -348,4 +348,13 @@
 - [x] 前端 lockfile修正 `js-yaml` 4.3.1至4.3.2及`nanoid` 3.3.16至3.3.19，`npm audit --audit-level=high` 已通過；剩餘2個moderate來自Vitest鏈，修復需升Vitest 5，未在本輪做破壞性升級。
 - [x] 回歸發現並修正兩個測試基礎問題：release shell契約仍綁舊單job workflow；eventlog Tail測試使用100ms絕對門檻且失敗時未收回goroutine。兩者均先失敗，再改為新release契約與完成順序判定後通過。
 - [x] 驗證：workflow契約連跑20次、Go 16 packages shuffle全綠、vet、module verify/tidy、nested web Go測試、actionlint、govulncheck、npm audit/lint/77 tests/build、deploy self-tests、Linux amd64/arm64 build全過；eventlog目標測試連跑20次、coverage 85.2%。
-- [ ] 未完整驗證：Windows缺gcc，無法在本機跑Go race；root network namespace integration無法在Windows執行，兩項已由Ubuntu CI保留。GitHub Actions尚需實際push/PR run確認遠端權限與服務可用性。
+- [x] 遠端驗證：GitHub Actions run `34711454566` 已在Ubuntu完成Go race、govulncheck、linux amd64/arm64 build與真實network namespace integration；所有job成功，push事件的dependency review依契約略過。
+
+## 2026-09-13 第二十六輪：推送與遠端 CI 閉環
+
+- [x] 以 6 個原子提交推送 watchdog、eventlog測試、前端audit、Go工具鏈、CI/release與agent紀錄；`main` 已正常推送至 GitHub，未納入既有未追蹤 `thoughts/`。
+- [x] 首次遠端 run `34710948221` 的前端、deploy、Go vet/race/govulncheck、linux amd64/arm64 build與真實netns integration全部成功；push事件的dependency review依契約略過。
+- [x] 唯一失敗為 actionlint 在Ubuntu可使用ShellCheck時命中CI gofmt步驟的`SC2046`；本機未安裝ShellCheck，所以先前本機actionlint未覆蓋此規則。
+- [x] TDD RED：新增`TestCIGofmtCheckAvoidsUnquotedCommandSubstitution`，在`gofmt -l $(git ls-files ...)`上穩定失敗；GREEN改為NUL分隔的`git ls-files -z | xargs -0 --no-run-if-empty gofmt -l`，保留只檢查追蹤檔且安全處理空白路徑。
+- [x] follow-up提交`a1c5a6b`已推送；run `34711454566` 全綠，actionlint、race、漏洞掃描、雙架構build及netns integration均完成遠端驗收。
+- [ ] 非阻擋警告：目前固定SHA所對應的checkout/setup-go/setup-node/artifact actions仍以Node.js 20建置，GitHub runner暫強制改用Node.js 24；後續需查證並升級到原生Node.js 24的major版本及完整SHA。

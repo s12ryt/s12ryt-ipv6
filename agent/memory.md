@@ -372,3 +372,12 @@
 - 測試修復：更新`deploy/release_test.sh`的新兩job契約；`internal/eventlog/logger_test.go`改以Write/Tail完成順序驗證鎖行為，所有分支先收回goroutine，移除排程敏感100ms門檻。
 - TDD四輪：workflow安全契約、工具鏈漏洞門檻、release最小權限、回歸自測/flake各自留下RED後完成GREEN。
 - 驗證：Go shuffle全16 packages、workflow契約20次、eventlog目標20次、vet、module verify/tidy、web Go test、actionlint、govulncheck、npm high audit/lint/77 tests/build、deploy self-tests、Linux amd64/arm64 build全過。Windows缺gcc未跑race；root netns integration留給Ubuntu CI。
+
+## 2026-09-13 第二十六輪：GitHub推送與遠端CI修復
+
+- 推送：6個原子提交已由`main`正常推至GitHub；遠端與本機HEAD一致，工作樹只保留接手前未追蹤`thoughts/`。
+- 遠端RED：Actions run `34710948221`只有workflow-lint失敗；Ubuntu的actionlint整合ShellCheck後在`.github/workflows/ci.yml`命中`SC2046`，其他含race、govulncheck、雙架構build及netns integration均成功。
+- 根因：gofmt步驟把`$(git ls-files '*.go')`以未引用參數傳入；本機缺ShellCheck，單跑actionlint無法呈現同一診斷。
+- TDD修復：`internal/cicheck/workflow_test.go`新增決定性SC2046回歸契約，先RED；CI改用NUL分隔的`git ls-files -z`與`xargs -0 --no-run-if-empty`後，目標測試20次、全cicheck測試、actionlint及實際Bash命令均GREEN。
+- 遠端GREEN：follow-up提交`a1c5a6b`已推送，Actions run `34711454566`全綠；actionlint、前端audit/lint/77 tests/build、deploy、Go mod/vet/govulncheck/race、linux amd64/arm64 build與真實netns integration均成功，push事件dependency review正常略過。
+- 殘餘警告：固定SHA對應的checkout/setup-go/setup-node/artifact actions仍標記Node.js 20 runtime，runner目前強制用Node.js 24；不阻擋本輪，但後續應查證原生Node.js 24 major版本後更新SHA。
