@@ -318,16 +318,28 @@ func TestLoggerTailDoesNotBlockConcurrentWrites(t *testing.T) {
 	default:
 	}
 
-	writeStart := time.Now()
-	if err := logger.Write(Event{Kind: KindProxy, Action: "concurrent-write", Success: true}); err != nil {
-		t.Fatal(err)
-	}
-	if writeElapsed := time.Since(writeStart); writeElapsed >= 100*time.Millisecond {
-		t.Fatalf("Write blocked for %v while Tail was decoding; Tail must not hold the logger mutex during decoding", writeElapsed)
-	}
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- logger.Write(Event{Kind: KindProxy, Action: "concurrent-write", Success: true})
+	}()
 
-	if err := <-tailDone; err != nil {
-		t.Fatalf("Tail error = %v", err)
+	writeFinishedFirst := false
+	var writeErr, tailErr error
+	select {
+	case writeErr = <-writeDone:
+		writeFinishedFirst = true
+		tailErr = <-tailDone
+	case tailErr = <-tailDone:
+		writeErr = <-writeDone
+	}
+	if writeErr != nil {
+		t.Fatalf("concurrent Write error = %v", writeErr)
+	}
+	if tailErr != nil {
+		t.Fatalf("Tail error = %v", tailErr)
+	}
+	if !writeFinishedFirst {
+		t.Fatal("Write completed after Tail decoded the bulk log; Tail must release the logger mutex before decoding")
 	}
 	if len(tailEvents) != 1000 {
 		t.Fatalf("Tail returned %d events, want 1000", len(tailEvents))
