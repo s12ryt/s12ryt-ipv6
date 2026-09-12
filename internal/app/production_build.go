@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -66,14 +68,19 @@ func (c productionDedicatedPoolCleaner) DeleteDedicatedPool(ctx context.Context,
 }
 
 type productionService struct {
-	service *Service
-	close   func() error
-	once    sync.Once
-	err     error
-	handler http.Handler
+	service  *Service
+	close    func() error
+	once     sync.Once
+	err      error
+	handler  http.Handler
+	watchdog *watchdog
 }
 
 func (s *productionService) Run(ctx context.Context) error {
+	if s.watchdog != nil {
+		go s.watchdog.Run(ctx)
+	}
+
 	runErr := s.service.Run(ctx)
 	s.once.Do(func() { s.err = s.close() })
 	return errors.Join(runErr, s.err)
@@ -355,14 +362,31 @@ func buildProduction(options ProductionOptions, platform productionPlatform) (_ 
 	if err != nil {
 		return nil, err
 	}
+	restartFn := func() error {
+		return exec.Command("systemctl", "restart", "--no-block", "s12ryt-ipv6").Run()
+	}
+	wd, wdErr := NewWatchdog(WatchdogOptions{
+		Interval: 60 * time.Second,
+		Timeout:  15 * time.Second,
+		Failures: 3,
+		Cooldown: 10 * time.Minute,
+		Targets:  watchdogTargets(persistentNodes),
+		Probe:    probeViaProxy,
+		Restart:  restartFn,
+		Now:      time.Now,
+		Random:   rand.Intn,
+		OnEvent:  func(event eventlog.Event) { _ = logger.Write(event) },
+	})
+	if wdErr != nil {
+		return nil, wdErr
+	}
+
 	operations, err := admin.NewOperationsCoordinator(admin.OperationsCoordinatorOptions{
 		Logs: logger, Stats: registry, SaveStats: func(snapshot stats.Snapshot) error { return stats.Save(paths.Statistics, snapshot) },
 		NAT64: monitor, SaveNAT64: configuration.SaveNAT64, Firewall: firewallManager,
 		Resolver: resolver, Resolvers: settings.Resolvers, SaveResolvers: configuration.SaveResolvers,
 		Connectivity: connectivity, BaseHealth: health.State, DiagnosisTimeout: 10 * time.Second,
-		Restart: func() error {
-			return exec.Command("systemctl", "restart", "--no-block", "s12ryt-ipv6").Run()
-		},
+		Restart:      restartFn,
 		RestartDelay: 1500 * time.Millisecond,
 	})
 	if err != nil {
@@ -496,7 +520,7 @@ func buildProduction(options ProductionOptions, platform productionPlatform) (_ 
 		return nil, err
 	}
 	cleanupLog = false
-	return &productionService{service: service, close: logger.Close, handler: httpServer.Handler()}, nil
+	return &productionService{service: service, close: logger.Close, handler: httpServer.Handler(), watchdog: wd}, nil
 }
 
 func productionResolverEndpoints(values []config.Resolver) ([]dns64.Endpoint, error) {
@@ -614,4 +638,42 @@ func listenPreparedControlSocket(
 		return nil, err
 	}
 	return listen(path)
+}
+
+func watchdogTargets(nodes *node.PersistentManager) func() []ProbeTarget {
+	return func() []ProbeTarget {
+		var targets []ProbeTarget
+		for _, current := range nodes.List() {
+			if current.Status != node.StatusRunning {
+				continue
+			}
+			cfg := current.Config
+			name := cfg.Name
+			if name == "" {
+				name = cfg.ID
+			}
+			for _, bind := range cfg.Inbound {
+				address := net.JoinHostPort(normalizeProbeAddress(bind.Address.String()), strconv.Itoa(int(cfg.Port)))
+				targets = append(targets, ProbeTarget{
+					Node:     name,
+					Address:  address,
+					Protocol: string(cfg.Protocol),
+					Username: cfg.Username,
+					Password: cfg.Password,
+				})
+			}
+		}
+		return targets
+	}
+}
+
+func normalizeProbeAddress(addr string) string {
+	switch addr {
+	case "0.0.0.0":
+		return "127.0.0.1"
+	case "::":
+		return "::1"
+	default:
+		return addr
+	}
 }
