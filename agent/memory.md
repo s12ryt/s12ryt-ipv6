@@ -322,3 +322,8 @@
 - 編輯：production_build.go（import math/rand+strconv；struct watchdog 欄位；Run 掛鉤；restartFn 抽變數共用；NewWatchdog 構建含 OnEvent 包裝閉包丟棄 Write error；ctor watchdog: wd；檔尾 watchdogTargets+normalizeProbeAddress）
 - 教訓：pwsh 腳本 boolean -or 短路後 .Contains 崩（WriteAllText 未執行需全程式重跑冪等腳本）；logger.Write 簽名 func(Event) error vs OnEvent func(Event)→包裝閉包
 - 驗證：go test ./... 15 包全綠、vet 0、gofmt 乾淨
+## 2026-09-12 第二十輪：六項盤查（調查輪，無代碼變更）
+
+- 讀碼：dns64/dot.go+resolver.go、eventlog/logger.go、proxy/udp_relay.go、node/runtime.go、firewall/manager.go、auth/limiter.go
+- 結論：內部六項全排除；唯一架構缺陷=DoT 無連線複用（被 resolver 快取緩解）；根因排序 D conntrack > A EMFILE > DoT 限流 > B 地址
+- 慣例：limiter.go 在 internal/auth 非 internal/admin（路徑查找教訓）

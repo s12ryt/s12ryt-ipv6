@@ -290,3 +290,9 @@
 - [x] production 接線：restartFn 共用+productionService watchdog 欄位+Run 掛鉤+Targets 生產函數（wildcard→loopback）
 - [x] 驗證：go test ./... 15 包全綠+vet 0+gofmt 乾淨
 - [ ] 待 VPS 部署後觀察 watchdog.probe 事件（若根因發作，分類錯誤即終裁數據）
+## 2026-09-12 第二十輪：隨時間殘廢六項完整盤查（調查輪）
+
+- [x] DoT queryer：每查詢新 TLS 連線無複用（架構缺陷）；resolver 快取（30s~10min+4096LRU+stampede 防護）大幅降低實際頻率
+- [x] eventlog/UDP relay/TCP handler/firewall/高頻 map 五項全排除（詳 question.md §41.2）
+- [x] 定論：進程內無時間退化機制；根因排序 D conntrack > A EMFILE > DoT 限流 > B 地址；待 VPS watchdog 事件終裁
+- [ ] DoT 連線複用修復（決策待用戶）

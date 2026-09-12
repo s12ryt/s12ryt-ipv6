@@ -810,3 +810,19 @@ TDD 證據：
 4. 長鏈調查結論（代碼內部無時間相關退化）：撥號鏈無 FD 洩漏（dialer 錯誤路徑全 Release）、source_pool 永不耗盡（Acquire 無上限）、resolver stampede 無卡死；根因排序 A EMFILE（F1 已修待驗）> D conntrack 表滿（新候選）> B 源地址移除 > C DoT；watchdog 探測事件的分類錯誤將直接提供終裁數據
 
 TDD：watchdog_test.go 11 測試（fake 注入：連續失敗計數/成功歸零/空 targets/重啟閾值/冷卻/Restart nil/ctx 取消/選項驗證）＋probe 測試（net.Pipe 模擬 socks5/http 伺服器：協商/帳密/拒絕應答/整合）；全套 go test ./... 15 packages 全綠+vet+gofmt
+### 41.2 第二十輪：隨時間殘廢六項完整盤查（2026-09-12）
+
+用戶原話：「請你不要輕易放棰的完整調查關於代理程式部分會隨著時間變得殘廢這件重大事情」
+
+逐項結論（內部資源積累全數盤查）：
+1. DoT queryer（dot.go L118-123）：每 DNS 查詢新 dial TCP+TLS 853→查詢→close，無連線複用——架構缺陷；FD 不洩（ExchangeContext 內部 close）。緩解因素：resolver 層快取完整（成功 clamp 30s~10min、negativeTTL 30s、4096 LRU evict、inFlight leader/follower stampede 防護），DoT 實際出網率=唯一域名數×TTL 到期率，非每查詢。潛在後果：高目的地多樣性流量下高頻新建 TLS→上游限流/port 壓力
+2. eventlog（logger.go）：單持久 FD+rotate close/reopen/Tail 用後即關——排除
+3. UDP relay（udp_relay.go）：idle deadline 超時退出+defer closeMappings+control 斷開 watcher+reservation.Close+firewall Open/Close 成對——排除
+4. TCP handler（node/runtime.go serve）：defer conn.Close+delete(active)+panic recover——排除；ServeConn 用 listener 級 ctx 但退出靠 conn 讀寫結束，完整
+5. firewall（manager.go）：Manager.Replace 全量重寫 table（flush+apply），非增量——排除規則積累
+6. 高頻 map：LoginLimiter perSource 每次操作 pruneLocked（空 key delete）；resolver cache 4096 有界；r.active 隨 conn 刪——排除
+
+最終根因排序（第二十輪定論）：
+- 進程內：「隨時間退化」機制不存在（六大項全排除）——代碼側唯一可改進=DoT 連線複用（防禦性加固，非確證根因）
+- 外部/核心態（按與症狀吻合度）：D conntrack 表滿（重啟斷所有連線→條目即清→「立即恢復」完美吻合；管理面「正常」可能為既有長連線）> A EMFILE（F1 已修，v1.0.7 待部署驗證）> DoT 上游限流（與立即恢復張力：上游態重啟不清）> B 源地址移除
+- 驗證路徑不變：VPS 部署 v1.0.7+watchdog 後看 watchdog.probe 事件分類+conntrack 計數
