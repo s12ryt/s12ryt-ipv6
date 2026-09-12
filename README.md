@@ -35,7 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/s12ryt/s12ryt-ipv6/main/install.sh 
 
 ## 從原始碼建置
 
-需要 Go 1.25、Node.js 24 與 npm。
+需要 Go 1.25.13 或更新版本、Node.js 24 與 npm。
 
 ```sh
 cd web
