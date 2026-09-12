@@ -22,20 +22,61 @@ on:
 permissions:
   contents: read
 
+env:
+  GOFLAGS: -mod=readonly
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  frontend:
-    name: Frontend lint, tests and build
-    runs-on: ubuntu-latest
+  workflow-lint:
+    name: GitHub Actions lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Lint workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+
+  frontend:
+    name: Frontend lint, tests and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
@@ -44,6 +85,10 @@ jobs:
       - name: Install dependencies
         working-directory: web
         run: npm ci
+
+      - name: Audit dependencies
+        working-directory: web
+        run: npm audit --audit-level=high
 
       - name: Lint
         working-directory: web
@@ -58,7 +103,7 @@ jobs:
         run: npm run build
 
       - name: Upload web assets for Go jobs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: web-dist
           path: web/dist
@@ -68,22 +113,35 @@ jobs:
   backend:
     name: Go vet and race-detector tests
     needs: frontend
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Restore built web assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: web-dist
           path: web/dist
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Verify Go modules
+        run: |
+          go mod download
+          go mod verify
+          go mod tidy -diff
+
+      - name: Test embedded web assets
+        working-directory: web
+        run: go test .
 
       - name: Check gofmt
         shell: bash
@@ -98,15 +156,19 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Scan Go vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+
       - name: Unit tests with race detector
         env:
           CGO_ENABLED: '1'
-        run: go test -race -count=1 -timeout=600s ./...
+        run: go test -race -shuffle=on -count=1 -timeout=600s ./...
 
   build:
     name: Build linux binary (${{ matrix.arch }})
     needs: frontend
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -115,16 +177,18 @@ jobs:
           - arm64
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Restore built web assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: web-dist
           path: web/dist
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: go.mod
           cache: true
@@ -138,10 +202,13 @@ jobs:
 
   deploy-scripts:
     name: Deploy script checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Syntax check
         shell: bash
@@ -159,13 +226,16 @@ jobs:
   integration:
     name: Netlink and nftables integration tests
     needs: backend
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: go.mod
           cache: true
