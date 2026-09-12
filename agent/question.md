@@ -840,3 +840,13 @@ TDD：watchdog_test.go 11 測試（fake 注入：連續失敗計數/成功歸零
 TDD：dot_pool_test.go 6 測試（複用 dialed==1／歸還失敗 fresh 重試／Id 不匹配拒絕+關閉／Close 關 idle 且可重開／池上限淘汰／8 goroutine 併發全成功）；net.Pipe+2B 幀假伺服器；**教訓：miekg/dns Msg.SetQuestion 會自動隨機化 Id——測試 helper 必須 SetQuestion 後再設 Id**
 
 驗證：dns64 包 11 測試全綠；全套 go test ./... 15 包全綠+vet 0+gofmt 淨
+
+### 43. Watchdog 擴充 IPv6 探測站點（2026-09-13）
+
+用戶原話：「要更多AAAA的網站,v6網站」
+
+已確認決策：
+1. 原生 IPv6 watchdog 目的由目前 3 個擴充為共 12 個。
+2. 站點組合採「知名雙棧站點 + IPv6-only 站點」，不只使用 DNS 供應商。
+3. 正式納入前必須查證每個目的有 AAAA 且 IPv6 TCP/443 可建立連線；IPv6-only 目的還必須沒有 A 記錄。
+4. 站點應盡量分散營運方，並維持既有綜合判定、循序探測、全部目的實際執行與公平 deadline 分配契約。

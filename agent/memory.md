@@ -337,3 +337,38 @@
 
 - tag v1.0.8（abce334）：watchdog 自癒（a07264e）＋DoT 連線池（10e7eaa）；Release workflow 34702020786 success；latest 解析 v1.0.8＋assets 齊全（checksums+amd64/arm64）
 - 待用戶：VPS 一鍵升級後回報——`ss -tnp | grep :853` 連線數穩定（DoT 池生效）；watchdog.probe 事件（若根因發作自動留證）；conntrack 計數（終裁 D）
+
+## 2026-09-12 第二十二輪：watchdog 失效鏈修復
+
+- 讀取：agent 三份紀錄、README、node runtime/manager/persistent/resolved runtime/inbound、proxy dialer/source pool/socket/UDP、dns64 DoT/resolver/monitor/discovery、app service/production/watchdog/probe/connectivity/periodic refresh/health。
+- 確證：v1.0.8 watchdog 對 modern node 讀宣告態空 `Inbound` 而永遠零 targets；`one.one.one.one` 原生 AAAA 繞過 DNS64/NAT64；production `socks` 被當 HTTP；全域 failure counter 跨 target 污染並延後共享故障判定。
+- 編輯：internal/app/production_build.go、watchdog.go、watchdog_probe.go、watchdog_test.go；建立 watchdog_targets_test.go。修為 resolve 實際 bindings、IPv4 literal `1.1.1.1:443`、SOCKS 協定相容、per-target 隔離、失敗目標黏著複驗及 removed-target 回收。
+- TDD：六項回歸均留下先 RED 後 GREEN 證據；app package、全 Go 15 packages、vet、Linux amd64 build、diff check 通過。
+- 邊界：已修的是 watchdog 無法偵測/自癒的確定根因，不冒充原始資料面崩潰首因；後者仍需 VPS 故障當下 watchdog 分類、FD/limits、conntrack、IPv6 address/route 數據終裁。Windows race 因缺 gcc 未執行，gopls 亦未安裝。
+- 契約更正：`nat64_prefix` 空值會走自動發現；若外部 NAT64 實際不存在，服務可維持 degraded 且原生 IPv6 代理仍可用。`1.1.1.1:443` 只能證明 NAT64 能力，不可單獨代表整體資料面健康或觸發重啟；應拆分原生 IPv6 重啟探測與 NAT64 診斷。
+
+## 2026-09-13 第二十三輪：watchdog 多路徑綜合探測
+
+- 使用者決策：watchdog 應以多個具 AAAA 的網域綜合測試；DNS64/NAT64 啟用時也必須納入探測。
+- 編輯：`internal/app/watchdog_probe.go` 建立三個原生 AAAA 目的、條件式 DNS64 A-only 與 NAT64 IPv4 literal 目的，全部循序執行且僅在全部失敗時回錯；`production_build.go` 接入 NAT64 monitor 狀態；`watchdog_test.go` 改以可指定目的的底層 probe；建立 `watchdog_probe_plan_test.go`。
+- TDD RED/GREEN：新規劃 API 不存在；並行探測使容量測試觀察到 concurrency=2；無公平預算時首目的與父 deadline 差值=0。修正後目標測試連跑 20 次、全 Go 15 packages、vet、coverage 76.2%、Linux amd64 build 與 diff check 全過。
+- 決策：三個原生目的永遠加入；只有 manual NAT64 或 healthy+valid prefix 才加入 DNS64/NAT64；所有目的都執行、任一成功即表示資料面仍有可用路徑。循序探測避免自行競爭 `MaxTCP=1`，剩餘時間均分避免慢站壟斷 15 秒 deadline。
+- 邊界：真實業務已占滿 MaxTCP 時仍可能拒絕 probe；target resolver error 仍缺專用事件；Windows 缺 gcc 無法跑 race，VPS 長流量與 root netns 未執行。
+
+## 2026-09-13 第二十四輪：12 個 IPv6 watchdog 目的
+
+- 使用者透過問題工具選定：共 12 個，組合為雙棧加 IPv6-only；已寫入 `agent/question.md` §43。
+- 網路查證：對 27 個候選經 `1.1.1.1` 明確查 A/AAAA，並直連 AAAA 的 TCP/443；正式清單 12 個全部成功。`v6.ident.me`、`api6.ipify.org`、`ipv6.google.com` 為 AAAA-only，其餘 9 個為雙棧。
+- TDD：精確清單測試先得到舊 3 個與預期 12 個不符的 RED；擴充 `nativeProbeDestinations` 後，目標測試 `-count=20`、全 Go 15 packages、vet、coverage 76.2% 與 Linux amd64 build全過。
+- 保留既有契約：循序、全部實際執行、公平 deadline、任一成功即整體成功；NAT64 啟用時另加 2 個目的，總數為 14。
+- 風險：站點 DNS/服務屬外部可變依賴，後續發版維護時需重新驗證。
+
+## 2026-09-13 第二十五輪：GitHub CI 強化
+
+- 建立：`internal/cicheck/workflow_test.go`，結構解析CI/release YAML並固定runner、timeout、action SHA與版本註解、唯讀checkout、品質/供應鏈閘門、release權限邊界。
+- 編輯：`.github/workflows/ci.yml` 新增actionlint、PR dependency review、npm high audit、Go module一致性、nested web測試、govulncheck與race shuffle；所有job固定Ubuntu 24.04並加入timeout，第三方actions固定完整SHA。
+- 編輯：`.github/workflows/release.yml` 拆為唯讀verify與唯一write publish job；以job outputs傳tag判定、artifact傳已驗證web/dist，固定GoReleaser action v6.4.0 SHA與binary v2.18.1。
+- 安全修復：`go.mod`/README最低Go由1.25.0升至1.25.13；本機預設Go 1.26.3經govulncheck命中6個可達標準庫漏洞，安全修補版1.25.13為0。lockfile升級js-yaml 4.3.2及nanoid 3.3.19，high audit歸零。
+- 測試修復：更新`deploy/release_test.sh`的新兩job契約；`internal/eventlog/logger_test.go`改以Write/Tail完成順序驗證鎖行為，所有分支先收回goroutine，移除排程敏感100ms門檻。
+- TDD四輪：workflow安全契約、工具鏈漏洞門檻、release最小權限、回歸自測/flake各自留下RED後完成GREEN。
+- 驗證：Go shuffle全16 packages、workflow契約20次、eventlog目標20次、vet、module verify/tidy、web Go test、actionlint、govulncheck、npm high audit/lint/77 tests/build、deploy self-tests、Linux amd64/arm64 build全過。Windows缺gcc未跑race；root netns integration留給Ubuntu CI。
