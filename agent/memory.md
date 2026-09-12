@@ -333,3 +333,7 @@
 - 建立：internal/dns64/dot_pool_test.go（6 測試+fakeDoTConn+servePipeDoT harness）
 - 教訓：Msg.SetQuestion 內部 dns.Id() 隨機化——賦 Id 必須在 SetQuestion 之後（除錯走過：response id 隨機值特徵→臨時 echo 實驗定位→helper 修正，實現無 bug）
 - 驗證：go test ./... 15 包全綠、vet 0、gofmt 淨
+## 2026-09-12 v1.0.8 發佈
+
+- tag v1.0.8（abce334）：watchdog 自癒（a07264e）＋DoT 連線池（10e7eaa）；Release workflow 34702020786 success；latest 解析 v1.0.8＋assets 齊全（checksums+amd64/arm64）
+- 待用戶：VPS 一鍵升級後回報——`ss -tnp | grep :853` 連線數穩定（DoT 池生效）；watchdog.probe 事件（若根因發作自動留證）；conntrack 計數（終裁 D）

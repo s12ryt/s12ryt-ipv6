@@ -302,3 +302,7 @@
 - [x] 6 新測試（net.Pipe 假 DoT 伺服器：複用/重試/Id 拒絕/Close/上限/併發）
 - [x] 全套 15 包全綠+vet 0+gofmt 淨
 - [ ] 待 VPS 部署驗證：853 連線數穩定（ss -tnp | grep :853）、上游限流不再觸發
+## 2026-09-12 v1.0.8 發佈
+
+- tag v1.0.8（abce334）：watchdog 自癒（a07264e）＋DoT 連線池（10e7eaa）；Release workflow 34702020786 success；latest 解析 v1.0.8＋assets 齊全（checksums+amd64/arm64）
+- 待用戶：VPS 一鍵升級後回報——`ss -tnp | grep :853` 連線數穩定（DoT 池生效）；watchdog.probe 事件（若根因發作自動留證）；conntrack 計數（終裁 D）
