@@ -296,3 +296,9 @@
 - [x] eventlog/UDP relay/TCP handler/firewall/高頻 map 五項全排除（詳 question.md §41.2）
 - [x] 定論：進程內無時間退化機制；根因排序 D conntrack > A EMFILE > DoT 限流 > B 地址；待 VPS watchdog 事件終裁
 - [ ] DoT 連線複用修復（決策待用戶）
+## 2026-09-12 第二十一輪：DoT 連線池修復
+
+- [x] GREEN 實作 dot.go：idle 池（takeIdle/putIdle/Close）+roundTrip（deadline 幀讀寫）+dialDoTConn（tcp6+TLS handshake 注入點）+歸還失敗自動 fresh 重試+Id 匹配驗證
+- [x] 6 新測試（net.Pipe 假 DoT 伺服器：複用/重試/Id 拒絕/Close/上限/併發）
+- [x] 全套 15 包全綠+vet 0+gofmt 淨
+- [ ] 待 VPS 部署驗證：853 連線數穩定（ss -tnp | grep :853）、上游限流不再觸發

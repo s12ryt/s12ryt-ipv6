@@ -826,3 +826,17 @@ TDD：watchdog_test.go 11 測試（fake 注入：連續失敗計數/成功歸零
 - 進程內：「隨時間退化」機制不存在（六大項全排除）——代碼側唯一可改進=DoT 連線複用（防禦性加固，非確證根因）
 - 外部/核心態（按與症狀吻合度）：D conntrack 表滿（重啟斷所有連線→條目即清→「立即恢復」完美吻合；管理面「正常」可能為既有長連線）> A EMFILE（F1 已修，v1.0.7 待部署驗證）> DoT 上游限流（與立即恢復張力：上游態重啟不清）> B 源地址移除
 - 驗證路徑不變：VPS 部署 v1.0.7+watchdog 後看 watchdog.probe 事件分類+conntrack 計數
+### 42. 第二十一輪：DoT 連線池（2026-09-12）
+
+承 §41.2 發現 1（DoT 每查詢新 dial TLS 853，無複用）。用戶拍板動工修復。
+
+契約：
+1. DoTQueryer 新增 per-endpoint idle TLS 連線池：exchangeDoT 先 takeIdle(address)（LIFO 彈出）→roundTrip→成功且 response.Id==request.Id→putIdle 歸還；歸還失敗（錯誤/Id 不匹配）conn.Close 後自動 fresh dial 重試一次；fresh 查詢錯誤關閉不歸還
+2. roundTrip：deadline=min(q.timeout, ctx.Deadline())；WriteMsg→ReadMsg（dns.Conn 幀協議）
+3. dialDoTConn：client.Dialer.DialContext("tcp6")+tls.Client(HandshakeContext)；dial 函數可注入（測試）
+4. 池上限 maxIdleDoTConnsPerEndpoint=2（超出即關）；Close() 置位+全關（測試用）
+5. 併發安全：mu 保護 idle map/closed；單 conn 一次一查（不做 ID pipeline 多工）
+
+TDD：dot_pool_test.go 6 測試（複用 dialed==1／歸還失敗 fresh 重試／Id 不匹配拒絕+關閉／Close 關 idle 且可重開／池上限淘汰／8 goroutine 併發全成功）；net.Pipe+2B 幀假伺服器；**教訓：miekg/dns Msg.SetQuestion 會自動隨機化 Id——測試 helper 必須 SetQuestion 後再設 Id**
+
+驗證：dns64 包 11 測試全綠；全套 go test ./... 15 包全綠+vet 0+gofmt 淨

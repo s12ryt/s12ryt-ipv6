@@ -327,3 +327,9 @@
 - 讀碼：dns64/dot.go+resolver.go、eventlog/logger.go、proxy/udp_relay.go、node/runtime.go、firewall/manager.go、auth/limiter.go
 - 結論：內部六項全排除；唯一架構缺陷=DoT 無連線複用（被 resolver 快取緩解）；根因排序 D conntrack > A EMFILE > DoT 限流 > B 地址
 - 慣例：limiter.go 在 internal/auth 非 internal/admin（路徑查找教訓）
+## 2026-09-12 第二十一輪：DoT 連線池
+
+- 編輯：internal/dns64/dot.go（sync import；maxIdleDoTConnsPerEndpoint=2；struct dial/mu/idle/closed；exchangeDoT 池化+重試；roundTrip；dialDoTConn；takeIdle/putIdle/Close）
+- 建立：internal/dns64/dot_pool_test.go（6 測試+fakeDoTConn+servePipeDoT harness）
+- 教訓：Msg.SetQuestion 內部 dns.Id() 隨機化——賦 Id 必須在 SetQuestion 之後（除錯走過：response id 隨機值特徵→臨時 echo 實驗定位→helper 修正，實現無 bug）
+- 驗證：go test ./... 15 包全綠、vet 0、gofmt 淨
