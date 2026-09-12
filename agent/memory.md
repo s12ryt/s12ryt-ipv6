@@ -316,3 +316,9 @@
 - 產物：checksums.txt+Linux_x86_64/arm64（binary+tar.gz）；取代 v1.0.6（含未修 Bug1/3）
 - 內容：v1.0.6 全部＋Bug1 restart 不受 request cancellation 影響＋Bug2 systemctl --no-block＋Bug3 /healthz started_at 新進程判定＋Bug4 mock 契約
 - VPS 升級：重跑一鍵安裝（latest 現解析至 v1.0.7）
+## 2026-09-12 第十九輪：watchdog
+
+- 建立：internal/app/watchdog.go、watchdog_probe.go、watchdog_test.go（全新三檔）
+- 編輯：production_build.go（import math/rand+strconv；struct watchdog 欄位；Run 掛鉤；restartFn 抽變數共用；NewWatchdog 構建含 OnEvent 包裝閉包丟棄 Write error；ctor watchdog: wd；檔尾 watchdogTargets+normalizeProbeAddress）
+- 教訓：pwsh 腳本 boolean -or 短路後 .Contains 崩（WriteAllText 未執行需全程式重跑冪等腳本）；logger.Write 簽名 func(Event) error vs OnEvent func(Event)→包裝閉包
+- 驗證：go test ./... 15 包全綠、vet 0、gofmt 乾淨

@@ -799,3 +799,14 @@ TDD 證據：
 3. **Bug3（高）前端過早報「已重新啟動」**：舊 waitForServiceHealth 只看 /healthz 200——restartService resolve 後舊進程 1.5s delay+優雅關閉期間仍 200→第一次輪詢即誤報成功。修：/healthz 回應加 `started_at`（RFC3339，HTTPServer.startedAt 於 NewHTTPServer 取 time.Now()）；前端 performRestart 先記 old startedAt（fetchStartedAt），waitForServiceRestart(old, 40×2s) 輪詢直到 started_at 改變（新進程）或 old 未知時任何恢復即成功；向後相容：回應缺 started_at 視為成功（舊後端降級行為）
 4. **Bug4（低）App.test mock 契約不符**：/healthz mock 曾回 `{state:'healthy'}`（後端實回 `{"status":...}`）；改兩階段 `{status:'healthy', started_at:...}`（restart POST 前返 old、後返 new）——同時充當 Bug3 happy-path 驗收（old→new 才成功）
 - http_test.go 斷言升級：精確字串比對改 assertHealthPayload helper（json.Unmarshal{status,started_at}+RFC3339 解析）
+### 41.1 第十九輪補充：watchdog 自癒機制（2026-09-12）
+
+用戶需求原話：「沒有辦法做一個極小的糾正程式嗎,用於實時抽取程式中的隨機代理監測對外連通性,如果為殘廢代理則重啟,但是這個還是治標不治本,所以請你順便在仔細長鏈大調查一下」
+
+契約：
+1. internal/app/watchdog.go：NewWatchdog(WatchdogOptions)——Interval 60s/Timeout 15s/Failures 3/Cooldown 10m（生產值）；Run(ctx) ticker 循環；每輪 Targets() 取快照（空→跳過不計失敗）、Random(n) 挑一目標、Probe 探測；成功歸零失敗計數；失敗記 system 事件 {action: watchdog.probe, success: false, node, error: "proxy probe failed: "+describeDialError(err)}（復用 O1 分類器）；連續>=Failures 且距上次重啟>=Cooldown→執行 Restart（nil→僅記事件）+記 watchdog.restart 事件；Now/Random 必填注入
+2. watchdog_probe.go：probeViaProxy 經代理真實 CONNECT one.one.one.one:443（域名目標覆蓋 DoT 解析+DNS64 合成+IPv6 出站全鏈）；socks5 含 RFC1929 帳密協商；http/mixed 用 HTTP CONNECT+Basic auth；帶 deadline
+3. production 接線（production_build.go）：restartFn 抽共用變數（systemctl restart --no-block）；productionService 加 watchdog 欄位，Run 內 go s.watchdog.Run(ctx)；Targets=persistentNodes.List() 過濾 running→Inbound BindSpec（wildcard 0.0.0.0→127.0.0.1、::→::1 本機探測）
+4. 長鏈調查結論（代碼內部無時間相關退化）：撥號鏈無 FD 洩漏（dialer 錯誤路徑全 Release）、source_pool 永不耗盡（Acquire 無上限）、resolver stampede 無卡死；根因排序 A EMFILE（F1 已修待驗）> D conntrack 表滿（新候選）> B 源地址移除 > C DoT；watchdog 探測事件的分類錯誤將直接提供終裁數據
+
+TDD：watchdog_test.go 11 測試（fake 注入：連續失敗計數/成功歸零/空 targets/重啟閾值/冷卻/Restart nil/ctx 取消/選項驗證）＋probe 測試（net.Pipe 模擬 socks5/http 伺服器：協商/帳密/拒絕應答/整合）；全套 go test ./... 15 packages 全綠+vet+gofmt

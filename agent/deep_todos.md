@@ -282,3 +282,11 @@
 - [x] Bug4：App.test /healthz mock 改 {status, started_at} 兩階段；http_test assertHealthPayload helper
 - [x] 驗證：go test ./... 15 包全綠+vet+gofmt clean；vitest 77 全綠+lint+build
 - [ ] 待發新 Release（v1.0.6 含 Bug1/3，重啟按鈕不可靠）；版本號待用戶指定
+## 2026-09-12 第十九輪：長鏈大調查＋watchdog 自癒機制
+
+- [x] 長鏈調查：source_pool/dialer/resolver 讀碼——內部無 FD 洩漏/池耗盡/stampede 卡死；根因排序更新 A EMFILE > D conntrack > B 地址 > C DoT
+- [x] watchdog 核心 TDD（11 測試：防抖/冷卻/重啟/事件含 describeDialError 分類）
+- [x] 探測器：socks5(RFC1929)+HTTP CONNECT(Basic)真實協定探測 one.one.one.one:443
+- [x] production 接線：restartFn 共用+productionService watchdog 欄位+Run 掛鉤+Targets 生產函數（wildcard→loopback）
+- [x] 驗證：go test ./... 15 包全綠+vet 0+gofmt 乾淨
+- [ ] 待 VPS 部署後觀察 watchdog.probe 事件（若根因發作，分類錯誤即終裁數據）
