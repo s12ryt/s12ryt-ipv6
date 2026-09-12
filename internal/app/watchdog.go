@@ -37,8 +37,14 @@ type WatchdogOptions struct {
 type watchdog struct {
 	options     WatchdogOptions
 	mu          sync.Mutex
-	failures    int
+	failures    map[probeTargetKey]int
 	lastRestart time.Time
+}
+
+type probeTargetKey struct {
+	node     string
+	address  string
+	protocol string
 }
 
 // NewWatchdog validates the options and returns a watchdog ready to Run.
@@ -67,11 +73,12 @@ func NewWatchdog(options WatchdogOptions) (*watchdog, error) {
 	if options.OnEvent == nil {
 		return nil, errors.New("watchdog event writer is required")
 	}
-	return &watchdog{options: options}, nil
+	return &watchdog{options: options, failures: make(map[probeTargetKey]int)}, nil
 }
 
-// Run probes one randomly selected running proxy listener every Interval
-// until the context is cancelled.
+// Run probes one running proxy listener every Interval until the context is
+// cancelled. A failing target is retried until it recovers or reaches the
+// restart threshold; otherwise the target is selected randomly.
 func (w *watchdog) Run(ctx context.Context) {
 	ticker := time.NewTicker(w.options.Interval)
 	defer ticker.Stop()
@@ -87,23 +94,25 @@ func (w *watchdog) Run(ctx context.Context) {
 
 func (w *watchdog) probeOnce(ctx context.Context) {
 	targets := w.options.Targets()
+	w.dropRemovedTargets(targets)
 	if len(targets) == 0 {
 		// Without running nodes there is nothing to guard; do not count
 		// this as a failure.
 		return
 	}
-	target := targets[w.options.Random(len(targets))]
+	target := w.selectTarget(targets)
 	probeCtx, cancel := context.WithTimeout(ctx, w.options.Timeout)
 	err := w.options.Probe(probeCtx, target)
 	cancel()
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	key := probeTargetKey{node: target.Node, address: target.Address, protocol: target.Protocol}
 	if err == nil {
-		w.failures = 0
+		delete(w.failures, key)
 		return
 	}
-	w.failures++
+	w.failures[key]++
 	w.options.OnEvent(eventlog.Event{
 		Kind:    eventlog.KindSystem,
 		Action:  "watchdog.probe",
@@ -111,14 +120,14 @@ func (w *watchdog) probeOnce(ctx context.Context) {
 		Node:    target.Node,
 		Error:   "proxy probe failed: " + describeDialError(err),
 	})
-	if w.failures < w.options.Failures {
+	if w.failures[key] < w.options.Failures {
 		return
 	}
 	now := w.options.Now()
 	if !w.lastRestart.IsZero() && now.Sub(w.lastRestart) < w.options.Cooldown {
 		return
 	}
-	w.failures = 0
+	delete(w.failures, key)
 	w.lastRestart = now
 	if w.options.Restart == nil {
 		w.options.OnEvent(eventlog.Event{
@@ -143,8 +152,39 @@ func (w *watchdog) probeOnce(ctx context.Context) {
 	w.options.OnEvent(event)
 }
 
+func (w *watchdog) selectTarget(targets []ProbeTarget) ProbeTarget {
+	w.mu.Lock()
+	for _, target := range targets {
+		key := probeTargetKey{node: target.Node, address: target.Address, protocol: target.Protocol}
+		if w.failures[key] > 0 {
+			w.mu.Unlock()
+			return target
+		}
+	}
+	w.mu.Unlock()
+	return targets[w.options.Random(len(targets))]
+}
+
+func (w *watchdog) dropRemovedTargets(targets []ProbeTarget) {
+	active := make(map[probeTargetKey]struct{}, len(targets))
+	for _, target := range targets {
+		active[probeTargetKey{node: target.Node, address: target.Address, protocol: target.Protocol}] = struct{}{}
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for key := range w.failures {
+		if _, ok := active[key]; !ok {
+			delete(w.failures, key)
+		}
+	}
+}
+
 func (w *watchdog) failureCount() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.failures
+	total := 0
+	for _, failures := range w.failures {
+		total += failures
+	}
+	return total
 }

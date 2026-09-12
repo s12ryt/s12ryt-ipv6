@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/s12ryt/s12ryt-ipv6/internal/eventlog"
+	"github.com/s12ryt/s12ryt-ipv6/internal/node"
 )
 
 type watchdogRecorder struct {
@@ -176,6 +177,69 @@ func TestWatchdogSuccessResetsFailureCount(t *testing.T) {
 	}
 }
 
+func TestWatchdogTracksConsecutiveFailuresPerTarget(t *testing.T) {
+	targets := []ProbeTarget{
+		{Node: "broken", Address: "127.0.0.1:1080", Protocol: "socks5"},
+		{Node: "healthy", Address: "127.0.0.1:1081", Protocol: "socks5"},
+	}
+	selections := []int{0, 1, 0, 0}
+	selection := 0
+	w, rec := newWatchdogForTest(t, func(o *WatchdogOptions) {
+		o.Targets = func() []ProbeTarget { return targets }
+		o.Random = func(int) int {
+			selected := selections[selection]
+			selection++
+			return selected
+		}
+		o.Probe = func(_ context.Context, target ProbeTarget) error {
+			if target.Node == "broken" {
+				return errors.New("broken target")
+			}
+			return nil
+		}
+	})
+
+	for range selections {
+		w.probeOnce(context.Background())
+	}
+	if got := rec.restartCount(); got != 1 {
+		t.Fatalf("restarts after 3 failures for one target = %d, want 1", got)
+	}
+}
+
+func TestWatchdogRetriesFailingTargetBeforeRandomSelection(t *testing.T) {
+	targets := []ProbeTarget{
+		{Node: "broken", Address: "127.0.0.1:1080", Protocol: "socks"},
+		{Node: "healthy", Address: "127.0.0.1:1081", Protocol: "socks"},
+	}
+	randomCalls := 0
+	probed := make([]string, 0, 2)
+	w, _ := newWatchdogForTest(t, func(o *WatchdogOptions) {
+		o.Targets = func() []ProbeTarget { return targets }
+		o.Random = func(int) int {
+			index := randomCalls
+			randomCalls++
+			return index
+		}
+		o.Probe = func(_ context.Context, target ProbeTarget) error {
+			probed = append(probed, target.Node)
+			if target.Node == "broken" {
+				return errors.New("broken")
+			}
+			return nil
+		}
+	})
+
+	w.probeOnce(context.Background())
+	w.probeOnce(context.Background())
+	if got := strings.Join(probed, ","); got != "broken,broken" {
+		t.Fatalf("probed targets = %q, want broken,broken", got)
+	}
+	if randomCalls != 1 {
+		t.Fatalf("random selections = %d, want 1 while retrying failed target", randomCalls)
+	}
+}
+
 func TestWatchdogSkipsWhenNoTargets(t *testing.T) {
 	w, _ := newWatchdogForTest(t, func(o *WatchdogOptions) {
 		o.Targets = func() []ProbeTarget { return nil }
@@ -183,6 +247,23 @@ func TestWatchdogSkipsWhenNoTargets(t *testing.T) {
 	w.probeOnce(context.Background())
 	if got := w.failureCount(); got != 0 {
 		t.Fatalf("failureCount() = %d, want 0 with no targets", got)
+	}
+}
+
+func TestWatchdogDropsFailuresForRemovedTargets(t *testing.T) {
+	targets := []ProbeTarget{{Node: "removed", Address: "127.0.0.1:1080", Protocol: "socks"}}
+	w, _ := newWatchdogForTest(t, func(o *WatchdogOptions) {
+		o.Targets = func() []ProbeTarget { return targets }
+	})
+
+	w.probeOnce(context.Background())
+	if got := w.failureCount(); got != 1 {
+		t.Fatalf("failureCount() = %d, want 1 before target removal", got)
+	}
+	targets = nil
+	w.probeOnce(context.Background())
+	if got := w.failureCount(); got != 0 {
+		t.Fatalf("failureCount() = %d, want 0 after target removal", got)
 	}
 }
 
@@ -469,7 +550,30 @@ func TestProbeViaProxyUsesListenerAddress(t *testing.T) {
 	target := ProbeTarget{Node: "n", Address: address, Protocol: "http", Username: "u", Password: "p"}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := probeViaProxy(ctx, target); err != nil {
-		t.Fatalf("probeViaProxy() error = %v", err)
+	if err := probeViaProxyDestination(ctx, target, "one.one.one.one:443"); err != nil {
+		t.Fatalf("probeViaProxyDestination() error = %v", err)
+	}
+}
+
+func TestProbeViaProxyUsesSOCKSHandshakeForNodeProtocol(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		serveSocks5Probe(t, conn, false)
+	}()
+	target := ProbeTarget{
+		Node: "n", Address: listener.Addr().String(), Protocol: string(node.ProtocolSOCKS),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := probeViaProxyDestination(ctx, target, "one.one.one.one:443"); err != nil {
+		t.Fatalf("probeViaProxyDestination(node SOCKS protocol) error = %v", err)
 	}
 }

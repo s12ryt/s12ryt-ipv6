@@ -11,18 +11,85 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/s12ryt/s12ryt-ipv6/internal/dns64"
 )
 
-// probeDestination is the target domain used for watchdog probes. Using a
-// domain name exercises the full outbound chain: DoT resolver, DNS64
-// synthesis and the IPv6-only data path toward the public internet.
-const probeDestination = "one.one.one.one:443"
+var nativeProbeDestinations = [...]string{
+	// Dual-stack sites operated by independent networks and organizations.
+	"one.one.one.one:443",
+	"dns.google:443",
+	"www.wikipedia.org:443",
+	"www.facebook.com:443",
+	"www.microsoft.com:443",
+	"www.debian.org:443",
+	"www.kernel.org:443",
+	"www.quad9.net:443",
+	"www.he.net:443",
+	// IPv6-only sites with no A record.
+	"v6.ident.me:443",
+	"api6.ipify.org:443",
+	"ipv6.google.com:443",
+}
 
-// probeViaProxy dials the proxy listener address and performs a complete
-// proxy handshake toward probeDestination. socks5 listeners use the SOCKS5
-// CONNECT flow; http and mixed listeners use HTTP CONNECT (mixed listeners
-// must accept HTTP CONNECT as well).
-func probeViaProxy(parent context.Context, target ProbeTarget) error {
+const (
+	dns64ProbeDestination = "ipv4.google.com:443"
+	nat64ProbeDestination = "1.1.1.1:443"
+)
+
+func watchdogProbeDestinations(nat64Enabled bool) []string {
+	destinations := make([]string, 0, len(nativeProbeDestinations)+2)
+	destinations = append(destinations, nativeProbeDestinations[:]...)
+	if nat64Enabled {
+		destinations = append(destinations, dns64ProbeDestination, nat64ProbeDestination)
+	}
+	return destinations
+}
+
+func nat64WatchdogProbeEnabled(status dns64.NAT64Status) bool {
+	return status.Manual || status.State == dns64.NAT64Healthy && status.Prefix.IsValid()
+}
+
+func newProxyWatchdogProbe(
+	nat64Enabled func() bool,
+	probe func(context.Context, ProbeTarget, string) error,
+) func(context.Context, ProbeTarget) error {
+	return func(ctx context.Context, target ProbeTarget) error {
+		destinations := watchdogProbeDestinations(nat64Enabled())
+		errs := make([]error, len(destinations))
+		for index, destination := range destinations {
+			probeCtx, cancel := watchdogProbeContext(ctx, len(destinations)-index)
+			err := probe(probeCtx, target, destination)
+			cancel()
+			if err != nil {
+				errs[index] = fmt.Errorf("%s: %w", destination, err)
+			}
+		}
+		for _, err := range errs {
+			if err == nil {
+				return nil
+			}
+		}
+		return errors.Join(errs...)
+	}
+}
+
+func watchdogProbeContext(parent context.Context, remainingDestinations int) (context.Context, context.CancelFunc) {
+	deadline, ok := parent.Deadline()
+	if !ok || remainingDestinations <= 0 {
+		return context.WithCancel(parent)
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return context.WithCancel(parent)
+	}
+	return context.WithTimeout(parent, remaining/time.Duration(remainingDestinations))
+}
+
+// probeViaProxyDestination dials the proxy listener and performs a complete
+// proxy handshake toward destination. SOCKS listeners use the SOCKS5 CONNECT
+// flow; HTTP and mixed listeners use HTTP CONNECT.
+func probeViaProxyDestination(parent context.Context, target ProbeTarget, destination string) error {
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(parent, "tcp", target.Address)
 	if err != nil {
@@ -36,10 +103,10 @@ func probeViaProxy(parent context.Context, target ProbeTarget) error {
 	if err := conn.SetDeadline(deadline); err != nil {
 		return err
 	}
-	if target.Protocol == "socks5" {
-		return socks5ProbeHandshake(conn, probeDestination, target.Username, target.Password)
+	if target.Protocol == "socks" || target.Protocol == "socks5" {
+		return socks5ProbeHandshake(conn, destination, target.Username, target.Password)
 	}
-	return httpConnectProbe(conn, probeDestination, target.Username, target.Password)
+	return httpConnectProbe(conn, destination, target.Username, target.Password)
 }
 
 func socks5ProbeHandshake(conn net.Conn, destination, username, password string) error {

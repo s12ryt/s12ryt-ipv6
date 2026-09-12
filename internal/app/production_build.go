@@ -370,12 +370,15 @@ func buildProduction(options ProductionOptions, platform productionPlatform) (_ 
 		Timeout:  15 * time.Second,
 		Failures: 3,
 		Cooldown: 10 * time.Minute,
-		Targets:  watchdogTargets(persistentNodes),
-		Probe:    probeViaProxy,
-		Restart:  restartFn,
-		Now:      time.Now,
-		Random:   rand.Intn,
-		OnEvent:  func(event eventlog.Event) { _ = logger.Write(event) },
+		Targets:  watchdogTargets(persistentNodes, inbound),
+		Probe: newProxyWatchdogProbe(
+			func() bool { return nat64WatchdogProbeEnabled(monitor.Status()) },
+			probeViaProxyDestination,
+		),
+		Restart: restartFn,
+		Now:     time.Now,
+		Random:  rand.Intn,
+		OnEvent: func(event eventlog.Event) { _ = logger.Write(event) },
 	})
 	if wdErr != nil {
 		return nil, wdErr
@@ -640,31 +643,38 @@ func listenPreparedControlSocket(
 	return listen(path)
 }
 
-func watchdogTargets(nodes *node.PersistentManager) func() []ProbeTarget {
+func watchdogTargets(nodes *node.PersistentManager, resolver node.InboundConfigResolver) func() []ProbeTarget {
 	return func() []ProbeTarget {
-		var targets []ProbeTarget
-		for _, current := range nodes.List() {
-			if current.Status != node.StatusRunning {
-				continue
-			}
-			cfg := current.Config
-			name := cfg.Name
-			if name == "" {
-				name = cfg.ID
-			}
-			for _, bind := range cfg.Inbound {
-				address := net.JoinHostPort(normalizeProbeAddress(bind.Address.String()), strconv.Itoa(int(cfg.Port)))
-				targets = append(targets, ProbeTarget{
-					Node:     name,
-					Address:  address,
-					Protocol: string(cfg.Protocol),
-					Username: cfg.Username,
-					Password: cfg.Password,
-				})
-			}
-		}
-		return targets
+		return buildWatchdogTargets(nodes.List(), resolver)
 	}
+}
+
+func buildWatchdogTargets(nodes []node.Node, resolver node.InboundConfigResolver) []ProbeTarget {
+	var targets []ProbeTarget
+	for _, current := range nodes {
+		if current.Status != node.StatusRunning {
+			continue
+		}
+		cfg, err := resolver.Resolve(current.Config)
+		if err != nil {
+			continue
+		}
+		name := cfg.Name
+		if name == "" {
+			name = cfg.ID
+		}
+		for _, bind := range cfg.Inbound {
+			address := net.JoinHostPort(normalizeProbeAddress(bind.Address.String()), strconv.Itoa(int(cfg.Port)))
+			targets = append(targets, ProbeTarget{
+				Node:     name,
+				Address:  address,
+				Protocol: string(cfg.Protocol),
+				Username: cfg.Username,
+				Password: cfg.Password,
+			})
+		}
+	}
+	return targets
 }
 
 func normalizeProbeAddress(addr string) string {
