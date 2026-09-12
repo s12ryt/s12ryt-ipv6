@@ -310,3 +310,9 @@
 - 驗證：go test ./... EXIT=0（15 包）、vet=0、gofmt clean；vitest 77 tests EXIT=0、eslint 0、vite build 0
 - 教訓：[System.IO.File]::WriteAllLines 產 CRLF 需手動 LF normalize（gofmt/eslint 報錯）；bash command 內嵌 tab 會失真→改 .ps1 檔+write 工具+[char]9；pwsh 單引號 here-string 內反引號非跳脫（Go 源碼跳脫字串直接字面寫入）
 - 待辦：發新 Release 取代 v1.0.6（版本號待用戶指定）
+## 2026-09-12 v1.0.7 Release 發佈
+
+- 用戶選 v1.0.7；annotated tag 打在 7136b0a（main HEAD）；Release workflow 34687861791 success（10:14:02Z）
+- 產物：checksums.txt+Linux_x86_64/arm64（binary+tar.gz）；取代 v1.0.6（含未修 Bug1/3）
+- 內容：v1.0.6 全部＋Bug1 restart 不受 request cancellation 影響＋Bug2 systemctl --no-block＋Bug3 /healthz started_at 新進程判定＋Bug4 mock 契約
+- VPS 升級：重跑一鍵安裝（latest 現解析至 v1.0.7）
