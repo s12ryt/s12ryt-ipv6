@@ -27,6 +27,8 @@ type ServiceOptions struct {
 	ReportDegraded     func(error)
 	PasswordOutput     io.Writer
 	StatsInterval      time.Duration
+	StartupAttempts    int
+	StartupRetryDelay  time.Duration
 }
 
 type Service struct {
@@ -61,6 +63,12 @@ func NewService(options ServiceOptions) (*Service, error) {
 	if options.StatsInterval <= 0 {
 		return nil, errors.New("statistics interval must be positive")
 	}
+	if options.StartupAttempts <= 0 {
+		return nil, errors.New("startup attempts must be positive")
+	}
+	if options.StartupRetryDelay < 0 {
+		return nil, errors.New("startup retry delay must not be negative")
+	}
 	if options.ReportDegraded == nil {
 		options.ReportDegraded = func(error) {}
 	}
@@ -93,7 +101,12 @@ func (s *Service) Run(ctx context.Context) error {
 			wrapLifecycleError("shutdown firewall", cleanupErr),
 		)
 	}
-	if err := s.options.ReconcileResources(ctx); err != nil {
+	if err := retryStartupOperation(
+		ctx,
+		s.options.StartupAttempts,
+		s.options.StartupRetryDelay,
+		s.options.ReconcileResources,
+	); err != nil {
 		s.options.ReportDegraded(fmt.Errorf("reconcile resources: %w", err))
 	}
 	if err := s.options.RestoreNodes(ctx); err != nil {
@@ -157,6 +170,48 @@ func (s *Service) Run(ctx context.Context) error {
 		wrapLifecycleError("close log", s.options.CloseLog()),
 	)
 	return errors.Join(runErr, cleanupErr)
+}
+
+func retryStartupOperation(
+	ctx context.Context,
+	attempts int,
+	delay time.Duration,
+	operation func(context.Context) error,
+) error {
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(lastErr, err)
+		}
+		lastErr = operation(ctx)
+		if lastErr == nil {
+			return nil
+		}
+		if attempt+1 == attempts {
+			break
+		}
+		if err := waitForStartupRetry(ctx, delay); err != nil {
+			return errors.Join(lastErr, err)
+		}
+	}
+	return lastErr
+}
+
+func waitForStartupRetry(ctx context.Context, delay time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if delay == 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func closeListeners(listeners []net.Listener) {

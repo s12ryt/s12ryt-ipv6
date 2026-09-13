@@ -518,6 +518,7 @@ func buildProduction(options ProductionOptions, platform productionPlatform) (_ 
 		CloseLog:         logger.Close,
 		ReportDegraded:   func(cause error) { report("service", cause) },
 		PasswordOutput:   options.Stdout, StatsInterval: productionStatsInterval,
+		StartupAttempts: 3, StartupRetryDelay: time.Second,
 	})
 	if err != nil {
 		return nil, err

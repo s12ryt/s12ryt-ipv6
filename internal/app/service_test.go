@@ -84,6 +84,7 @@ func validServiceOptions(recorder *lifecycleRecorder, output io.Writer) ServiceO
 		CloseLog:         func() error { recorder.add("close-log"); return nil },
 		PasswordOutput:   output,
 		StatsInterval:    time.Hour,
+		StartupAttempts:  1,
 	}
 }
 
@@ -214,11 +215,115 @@ func TestServiceContinuesWithDegradedStartupComponents(t *testing.T) {
 	}
 }
 
+func TestServiceRetriesTransientResourceReconciliationBeforeRestoringNodes(t *testing.T) {
+	recorder := &lifecycleRecorder{}
+	options := validServiceOptions(recorder, io.Discard)
+	resourceErr := errors.New("address reconciliation is not ready")
+	resourceAttempts := 0
+	options.ReconcileResources = func(context.Context) error {
+		resourceAttempts++
+		if resourceAttempts == 1 {
+			return resourceErr
+		}
+		return nil
+	}
+	restoreCalls := 0
+	options.RestoreNodes = func(context.Context) error {
+		restoreCalls++
+		return nil
+	}
+	var reported []error
+	options.ReportDegraded = func(err error) { reported = append(reported, err) }
+	options.StartupAttempts = 2
+	started := make(chan struct{})
+	options.ServeHTTP = func(ctx context.Context, _ []net.Listener) error {
+		close(started)
+		<-ctx.Done()
+		return nil
+	}
+	service, err := NewService(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- service.Run(ctx) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("service did not reach HTTP startup")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if resourceAttempts != 2 {
+		t.Fatalf("resource reconciliation attempts = %d, want 2", resourceAttempts)
+	}
+	if restoreCalls != 1 {
+		t.Fatalf("restore calls = %d, want 1", restoreCalls)
+	}
+	if len(reported) != 0 {
+		t.Fatalf("reported degraded errors = %v", reported)
+	}
+}
+
+func TestRetryStartupOperationStopsWhenContextIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	attempts := 0
+	wantErr := errors.New("address reconciliation is not ready")
+	err := retryStartupOperation(ctx, 3, time.Hour, func(context.Context) error {
+		attempts++
+		cancel()
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("retryStartupOperation() error = %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("operation attempts = %d, want 1", attempts)
+	}
+}
+
 func TestNewServiceRejectsMissingDependencies(t *testing.T) {
 	options := validServiceOptions(&lifecycleRecorder{}, io.Discard)
 	options.ServeHTTP = nil
 	if _, err := NewService(options); err == nil || !strings.Contains(err.Error(), "HTTP") {
 		t.Fatalf("NewService() error = %v", err)
+	}
+}
+
+func TestNewServiceRejectsInvalidStartupRetryPolicy(t *testing.T) {
+	tests := []struct {
+		name        string
+		configure   func(*ServiceOptions)
+		wantMessage string
+	}{
+		{
+			name: "zero attempts",
+			configure: func(options *ServiceOptions) {
+				options.StartupAttempts = 0
+			},
+			wantMessage: "startup attempts",
+		},
+		{
+			name: "negative delay",
+			configure: func(options *ServiceOptions) {
+				options.StartupRetryDelay = -time.Millisecond
+			},
+			wantMessage: "startup retry delay",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			options := validServiceOptions(&lifecycleRecorder{}, io.Discard)
+			test.configure(&options)
+			_, err := NewService(options)
+			if err == nil || !strings.Contains(err.Error(), test.wantMessage) {
+				t.Fatalf("NewService() error = %v, want message containing %q", err, test.wantMessage)
+			}
+		})
 	}
 }
 
