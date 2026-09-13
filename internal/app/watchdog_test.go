@@ -22,6 +22,130 @@ type watchdogRecorder struct {
 	restarts int
 }
 
+type memoryWatchdogRestartStateStore struct {
+	mu        sync.Mutex
+	state     WatchdogRestartState
+	present   bool
+	loadErr   error
+	saveErr   error
+	clearErr  error
+	saveCalls int
+	clears    int
+}
+
+func (s *memoryWatchdogRestartStateStore) Load() (WatchdogRestartState, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state, s.present, s.loadErr
+}
+
+func (s *memoryWatchdogRestartStateStore) Save(state WatchdogRestartState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.saveCalls++
+	if s.saveErr != nil {
+		return s.saveErr
+	}
+	s.state = state
+	s.present = true
+	return nil
+}
+
+func (s *memoryWatchdogRestartStateStore) Clear() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clears++
+	if s.clearErr != nil {
+		return s.clearErr
+	}
+	s.state = WatchdogRestartState{}
+	s.present = false
+	return nil
+}
+
+func TestWatchdogDoesNotRestartWhenRestartGuardCannotBeLoaded(t *testing.T) {
+	store := &memoryWatchdogRestartStateStore{loadErr: errors.New("corrupt state")}
+	w, recorder := newWatchdogForTest(t, func(options *WatchdogOptions) {
+		options.RestartState = store
+	})
+
+	for range 6 {
+		w.probeOnce(context.Background())
+	}
+	if got := recorder.restartCount(); got != 0 {
+		t.Fatalf("restarts with unreadable guard = %d, want 0", got)
+	}
+	for _, event := range recorder.snapshotEvents() {
+		if event.Action == "watchdog.state" && !event.Success && strings.Contains(event.Error, "corrupt state") {
+			return
+		}
+	}
+	t.Fatal("watchdog.state event for unreadable guard is missing")
+}
+
+func TestWatchdogDoesNotRestartWhenRestartGuardCannotBeSaved(t *testing.T) {
+	store := &memoryWatchdogRestartStateStore{saveErr: errors.New("read-only filesystem")}
+	w, recorder := newWatchdogForTest(t, func(options *WatchdogOptions) {
+		options.RestartState = store
+	})
+
+	for range 3 {
+		w.probeOnce(context.Background())
+	}
+	if got := recorder.restartCount(); got != 0 {
+		t.Fatalf("restarts without durable guard = %d, want 0", got)
+	}
+	for _, event := range recorder.snapshotEvents() {
+		if event.Action == "watchdog.restart" && !event.Success && strings.Contains(event.Error, "persist restart guard") {
+			return
+		}
+	}
+	t.Fatal("watchdog.restart event for failed guard persistence is missing")
+}
+
+func TestWatchdogClearsRestartGuardWhenRestartCommandFails(t *testing.T) {
+	store := &memoryWatchdogRestartStateStore{}
+	w, _ := newWatchdogForTest(t, func(options *WatchdogOptions) {
+		options.RestartState = store
+		options.Restart = func() error { return errors.New("systemctl failed") }
+	})
+
+	for range 3 {
+		w.probeOnce(context.Background())
+	}
+	if _, present, err := store.Load(); err != nil || present {
+		t.Fatalf("restart guard after command failure = (%v, %v), want absent without error", present, err)
+	}
+}
+
+func TestWatchdogClearsRestartGuardForRemovedTarget(t *testing.T) {
+	store := &memoryWatchdogRestartStateStore{
+		state: WatchdogRestartState{
+			Node: "removed", Address: "127.0.0.1:1080", Protocol: "socks", RestartedAt: time.Now(),
+		},
+		present: true,
+	}
+	probes := 0
+	w, _ := newWatchdogForTest(t, func(options *WatchdogOptions) {
+		options.RestartState = store
+		options.Targets = func() []ProbeTarget {
+			return []ProbeTarget{{Node: "active", Address: "127.0.0.1:1081", Protocol: "socks"}}
+		}
+		options.Probe = func(context.Context, ProbeTarget) error {
+			probes++
+			return nil
+		}
+	})
+
+	w.probeOnce(context.Background())
+	if _, present, err := store.Load(); err != nil || present {
+		t.Fatalf("restart guard for removed target = (%v, %v), want absent without error", present, err)
+	}
+	if probes != 1 {
+		t.Fatalf("active target probes = %d, want 1", probes)
+	}
+}
+
 func (r *watchdogRecorder) snapshotEvents() []eventlog.Event {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -50,9 +174,10 @@ func newWatchdogForTest(t *testing.T, mutate func(*WatchdogOptions)) (*watchdog,
 		Probe: func(context.Context, ProbeTarget) error {
 			return errors.New("dial tcp 1.2.3.4:443: connect: connection refused")
 		},
-		Restart: func() error { rec.mu.Lock(); rec.restarts++; rec.mu.Unlock(); return nil },
-		Now:     func() time.Time { return time.Now() },
-		Random:  func(n int) int { return 0 },
+		Restart:      func() error { rec.mu.Lock(); rec.restarts++; rec.mu.Unlock(); return nil },
+		RestartState: &memoryWatchdogRestartStateStore{},
+		Now:          func() time.Time { return time.Now() },
+		Random:       func(n int) int { return 0 },
 		OnEvent: func(event eventlog.Event) {
 			rec.mu.Lock()
 			rec.events = append(rec.events, event)
@@ -73,12 +198,13 @@ func TestWatchdogRequiresValidOptions(t *testing.T) {
 	base := func() WatchdogOptions {
 		return WatchdogOptions{
 			Interval: time.Second, Timeout: time.Second, Failures: 3, Cooldown: time.Minute,
-			Targets: func() []ProbeTarget { return nil },
-			Probe:   func(context.Context, ProbeTarget) error { return nil },
-			Restart: func() error { return nil },
-			Now:     func() time.Time { return time.Now() },
-			Random:  func(n int) int { return 0 },
-			OnEvent: func(eventlog.Event) {},
+			Targets:      func() []ProbeTarget { return nil },
+			Probe:        func(context.Context, ProbeTarget) error { return nil },
+			Restart:      func() error { return nil },
+			RestartState: &memoryWatchdogRestartStateStore{},
+			Now:          func() time.Time { return time.Now() },
+			Random:       func(n int) int { return 0 },
+			OnEvent:      func(eventlog.Event) {},
 		}
 	}
 	cases := []struct {
@@ -90,6 +216,7 @@ func TestWatchdogRequiresValidOptions(t *testing.T) {
 		{"failures", func(o *WatchdogOptions) { o.Failures = 0 }},
 		{"targets", func(o *WatchdogOptions) { o.Targets = nil }},
 		{"probe", func(o *WatchdogOptions) { o.Probe = nil }},
+		{"restart state", func(o *WatchdogOptions) { o.RestartState = nil }},
 		{"now", func(o *WatchdogOptions) { o.Now = nil }},
 		{"random", func(o *WatchdogOptions) { o.Random = nil }},
 		{"onevent", func(o *WatchdogOptions) { o.OnEvent = nil }},
@@ -109,6 +236,60 @@ func TestWatchdogRequiresValidOptions(t *testing.T) {
 	options.Restart = nil
 	if _, err := NewWatchdog(options); err != nil {
 		t.Fatalf("NewWatchdog(restart nil) error = %v", err)
+	}
+}
+
+func TestWatchdogRestartGuardSurvivesProcessReplacementUntilRecovery(t *testing.T) {
+	store := &memoryWatchdogRestartStateStore{}
+	failing := true
+
+	first, firstRecorder := newWatchdogForTest(t, func(options *WatchdogOptions) {
+		options.RestartState = store
+		options.Probe = func(context.Context, ProbeTarget) error {
+			if failing {
+				return errors.New("shared data plane failure")
+			}
+			return nil
+		}
+	})
+	for range 3 {
+		first.probeOnce(context.Background())
+	}
+	if got := firstRecorder.restartCount(); got != 1 {
+		t.Fatalf("first process restarts = %d, want 1", got)
+	}
+	if _, present, err := store.Load(); err != nil || !present {
+		t.Fatalf("restart guard after first restart = (%v, %v), want present without error", present, err)
+	}
+
+	second, secondRecorder := newWatchdogForTest(t, func(options *WatchdogOptions) {
+		options.RestartState = store
+		options.Probe = func(context.Context, ProbeTarget) error {
+			if failing {
+				return errors.New("shared data plane failure")
+			}
+			return nil
+		}
+	})
+	for range 6 {
+		second.probeOnce(context.Background())
+	}
+	if got := secondRecorder.restartCount(); got != 0 {
+		t.Fatalf("replacement process restarts before recovery = %d, want 0", got)
+	}
+
+	failing = false
+	second.probeOnce(context.Background())
+	if _, present, err := store.Load(); err != nil || present {
+		t.Fatalf("restart guard after recovery = (%v, %v), want absent without error", present, err)
+	}
+
+	failing = true
+	for range 3 {
+		second.probeOnce(context.Background())
+	}
+	if got := secondRecorder.restartCount(); got != 1 {
+		t.Fatalf("replacement process restarts after a new failure episode = %d, want 1", got)
 	}
 }
 
@@ -177,21 +358,17 @@ func TestWatchdogSuccessResetsFailureCount(t *testing.T) {
 	}
 }
 
-func TestWatchdogTracksConsecutiveFailuresPerTarget(t *testing.T) {
+func TestWatchdogDoesNotRestartWhenAnyTargetIsHealthy(t *testing.T) {
 	targets := []ProbeTarget{
 		{Node: "broken", Address: "127.0.0.1:1080", Protocol: "socks5"},
 		{Node: "healthy", Address: "127.0.0.1:1081", Protocol: "socks5"},
 	}
-	selections := []int{0, 1, 0, 0}
-	selection := 0
+	var probed []string
 	w, rec := newWatchdogForTest(t, func(o *WatchdogOptions) {
 		o.Targets = func() []ProbeTarget { return targets }
-		o.Random = func(int) int {
-			selected := selections[selection]
-			selection++
-			return selected
-		}
+		o.Random = func(int) int { return 0 }
 		o.Probe = func(_ context.Context, target ProbeTarget) error {
+			probed = append(probed, target.Node)
 			if target.Node == "broken" {
 				return errors.New("broken target")
 			}
@@ -199,32 +376,70 @@ func TestWatchdogTracksConsecutiveFailuresPerTarget(t *testing.T) {
 		}
 	})
 
-	for range selections {
+	for range 6 {
 		w.probeOnce(context.Background())
 	}
-	if got := rec.restartCount(); got != 1 {
-		t.Fatalf("restarts after 3 failures for one target = %d, want 1", got)
+	if got := rec.restartCount(); got != 0 {
+		t.Fatalf("restarts while one target remains healthy = %d, want 0", got)
+	}
+	if got := strings.Join(probed, ","); got != "broken,healthy,broken,healthy,broken,healthy" {
+		t.Fatalf("probed targets = %q, want alternating failed and untested healthy targets", got)
+	}
+	if got := w.failureCount(); got != 0 {
+		t.Fatalf("failureCount() after global success = %d, want 0", got)
 	}
 }
 
-func TestWatchdogRetriesFailingTargetBeforeRandomSelection(t *testing.T) {
+func TestWatchdogRestartsOnlyAfterEveryTargetReachesThreshold(t *testing.T) {
+	targets := []ProbeTarget{
+		{Node: "broken-a", Address: "127.0.0.1:1080", Protocol: "socks"},
+		{Node: "broken-b", Address: "127.0.0.1:1081", Protocol: "socks"},
+	}
+	var probed []string
+	w, rec := newWatchdogForTest(t, func(o *WatchdogOptions) {
+		o.Targets = func() []ProbeTarget { return targets }
+		o.Random = func(int) int { return 0 }
+		o.Probe = func(_ context.Context, target ProbeTarget) error {
+			probed = append(probed, target.Node)
+			return errors.New("shared failure")
+		}
+	})
+
+	for range 5 {
+		w.probeOnce(context.Background())
+	}
+	if got := rec.restartCount(); got != 0 {
+		t.Fatalf("restarts before every target reaches threshold = %d, want 0", got)
+	}
+	w.probeOnce(context.Background())
+	if got := rec.restartCount(); got != 1 {
+		t.Fatalf("restarts after every target reaches threshold = %d, want 1", got)
+	}
+	if got := strings.Join(probed, ","); got != "broken-a,broken-b,broken-a,broken-b,broken-a,broken-b" {
+		t.Fatalf("probed targets = %q, want balanced failure evidence", got)
+	}
+}
+
+func TestWatchdogRestartGuardClearsWhenAnyTargetRecovers(t *testing.T) {
+	store := &memoryWatchdogRestartStateStore{
+		state: WatchdogRestartState{
+			Node: "broken", Address: "127.0.0.1:1080", Protocol: "socks", RestartedAt: time.Now(),
+		},
+		present: true,
+	}
 	targets := []ProbeTarget{
 		{Node: "broken", Address: "127.0.0.1:1080", Protocol: "socks"},
 		{Node: "healthy", Address: "127.0.0.1:1081", Protocol: "socks"},
 	}
-	randomCalls := 0
-	probed := make([]string, 0, 2)
-	w, _ := newWatchdogForTest(t, func(o *WatchdogOptions) {
+	var probed []string
+	w, rec := newWatchdogForTest(t, func(o *WatchdogOptions) {
+		o.RestartState = store
 		o.Targets = func() []ProbeTarget { return targets }
-		o.Random = func(int) int {
-			index := randomCalls
-			randomCalls++
-			return index
-		}
+		o.Random = func(int) int { return 0 }
 		o.Probe = func(_ context.Context, target ProbeTarget) error {
 			probed = append(probed, target.Node)
 			if target.Node == "broken" {
-				return errors.New("broken")
+				return errors.New("localized failure")
 			}
 			return nil
 		}
@@ -232,11 +447,14 @@ func TestWatchdogRetriesFailingTargetBeforeRandomSelection(t *testing.T) {
 
 	w.probeOnce(context.Background())
 	w.probeOnce(context.Background())
-	if got := strings.Join(probed, ","); got != "broken,broken" {
-		t.Fatalf("probed targets = %q, want broken,broken", got)
+	if got := strings.Join(probed, ","); got != "broken,healthy" {
+		t.Fatalf("guarded probes = %q, want broken,healthy", got)
 	}
-	if randomCalls != 1 {
-		t.Fatalf("random selections = %d, want 1 while retrying failed target", randomCalls)
+	if _, present, err := store.Load(); err != nil || present {
+		t.Fatalf("restart guard after another target recovers = (%v, %v), want absent without error", present, err)
+	}
+	if got := rec.restartCount(); got != 0 {
+		t.Fatalf("restarts while another target is healthy = %d, want 0", got)
 	}
 }
 
@@ -247,6 +465,24 @@ func TestWatchdogSkipsWhenNoTargets(t *testing.T) {
 	w.probeOnce(context.Background())
 	if got := w.failureCount(); got != 0 {
 		t.Fatalf("failureCount() = %d, want 0 with no targets", got)
+	}
+}
+
+func TestWatchdogClearsRestartGuardWhenNoTargetsRemain(t *testing.T) {
+	store := &memoryWatchdogRestartStateStore{
+		state: WatchdogRestartState{
+			Node: "removed", Address: "127.0.0.1:1080", Protocol: "socks", RestartedAt: time.Now(),
+		},
+		present: true,
+	}
+	w, _ := newWatchdogForTest(t, func(o *WatchdogOptions) {
+		o.RestartState = store
+		o.Targets = func() []ProbeTarget { return nil }
+	})
+
+	w.probeOnce(context.Background())
+	if _, present, err := store.Load(); err != nil || present {
+		t.Fatalf("restart guard without targets = (%v, %v), want absent without error", present, err)
 	}
 }
 
@@ -267,22 +503,27 @@ func TestWatchdogDropsFailuresForRemovedTargets(t *testing.T) {
 	}
 }
 
-func TestWatchdogCooldownBlocksRepeatRestart(t *testing.T) {
+func TestWatchdogCooldownBlocksRepeatRestartAfterCommandFailure(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
-	w, rec := newWatchdogForTest(t, func(o *WatchdogOptions) {
+	restartCalls := 0
+	w, _ := newWatchdogForTest(t, func(o *WatchdogOptions) {
 		o.Cooldown = 10 * time.Minute
 		o.Now = func() time.Time { return now }
+		o.Restart = func() error {
+			restartCalls++
+			return errors.New("systemctl unavailable")
+		}
 	})
 	for i := 0; i < 6; i++ {
 		w.probeOnce(context.Background())
 		now = now.Add(time.Minute)
 	}
-	if got := rec.restartCount(); got != 1 {
+	if got := restartCalls; got != 1 {
 		t.Fatalf("restarts within cooldown = %d, want 1", got)
 	}
 	now = now.Add(30 * time.Minute)
 	w.probeOnce(context.Background())
-	if got := rec.restartCount(); got != 2 {
+	if got := restartCalls; got != 2 {
 		t.Fatalf("restarts after cooldown = %d, want 2", got)
 	}
 }

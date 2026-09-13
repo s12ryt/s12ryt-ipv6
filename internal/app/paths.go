@@ -18,6 +18,7 @@ type DataPaths struct {
 	EventLog         string
 	ControlSocket    string
 	ServiceLock      string
+	WatchdogRestart  string
 }
 
 func NewDataPaths(directory string) (DataPaths, error) {
@@ -38,5 +39,6 @@ func NewDataPaths(directory string) (DataPaths, error) {
 		EventLog:         filepath.Join(root, "events.jsonl"),
 		ControlSocket:    filepath.Join(root, "control.sock"),
 		ServiceLock:      filepath.Join(root, "service.lock"),
+		WatchdogRestart:  filepath.Join(root, "watchdog-restart.json"),
 	}, nil
 }

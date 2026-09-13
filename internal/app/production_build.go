@@ -365,6 +365,10 @@ func buildProduction(options ProductionOptions, platform productionPlatform) (_ 
 	restartFn := func() error {
 		return exec.Command("systemctl", "restart", "--no-block", "s12ryt-ipv6").Run()
 	}
+	watchdogRestartState, err := NewFileWatchdogRestartStateStore(paths.WatchdogRestart)
+	if err != nil {
+		return nil, err
+	}
 	wd, wdErr := NewWatchdog(WatchdogOptions{
 		Interval: 60 * time.Second,
 		Timeout:  15 * time.Second,
@@ -375,10 +379,11 @@ func buildProduction(options ProductionOptions, platform productionPlatform) (_ 
 			func() bool { return nat64WatchdogProbeEnabled(monitor.Status()) },
 			probeViaProxyDestination,
 		),
-		Restart: restartFn,
-		Now:     time.Now,
-		Random:  rand.Intn,
-		OnEvent: func(event eventlog.Event) { _ = logger.Write(event) },
+		Restart:      restartFn,
+		RestartState: watchdogRestartState,
+		Now:          time.Now,
+		Random:       rand.Intn,
+		OnEvent:      func(event eventlog.Event) { _ = logger.Write(event) },
 	})
 	if wdErr != nil {
 		return nil, wdErr

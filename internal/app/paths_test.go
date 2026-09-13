@@ -27,6 +27,7 @@ func TestNewDataPathsBuildsEveryPersistentPath(t *testing.T) {
 		EventLog:         filepath.Join(root, "events.jsonl"),
 		ControlSocket:    filepath.Join(root, "control.sock"),
 		ServiceLock:      filepath.Join(root, "service.lock"),
+		WatchdogRestart:  filepath.Join(root, "watchdog-restart.json"),
 	}
 	if !reflect.DeepEqual(paths, want) {
 		t.Fatalf("NewDataPaths() = %#v, want %#v", paths, want)
