@@ -381,3 +381,29 @@
 - TDD修復：`internal/cicheck/workflow_test.go`新增決定性SC2046回歸契約，先RED；CI改用NUL分隔的`git ls-files -z`與`xargs -0 --no-run-if-empty`後，目標測試20次、全cicheck測試、actionlint及實際Bash命令均GREEN。
 - 遠端GREEN：follow-up提交`a1c5a6b`已推送，Actions run `34711454566`全綠；actionlint、前端audit/lint/77 tests/build、deploy、Go mod/vet/govulncheck/race、linux amd64/arm64 build與真實netns integration均成功，push事件dependency review正常略過。
 - 殘餘警告：固定SHA對應的checkout/setup-go/setup-node/artifact actions仍標記Node.js 20 runtime，runner目前強制用Node.js 24；不阻擋本輪，但後續應查證原生Node.js 24 major版本後更新SHA。
+
+## 2026-09-13 第二十七輪：更新後首次節點恢復修復
+
+- 更正：官方更新流程確實停止舊服務並啟動新binary，不是運行中熱更新；使用者「再重啟一次就正常」對應的是第一次新進程啟動未重試暫時錯誤。
+- 根因鏈：`Service.Run` 對資源對帳／節點恢復錯誤只標 degraded；原 `Manager.Restore` 啟動一次後把失敗節點留為 stopped；非空持久狀態仍標 restored，而磁碟 desired running 不變，所以第二次服務重啟會再嘗試。
+- 編輯：`internal/app/service.go`／`production_build.go` 新增啟動操作有界重試設定，production為3次、間隔1秒；`internal/node/manager.go` 的手動Start與Restore共用相同政策，Restore按輪只重試失敗節點。
+- TDD：資源對帳、Restore與Start三條一次性失敗路徑均先RED再GREEN；另補context取消、設定驗證、永久錯誤上限及健康節點不重跑測試，目標測試各連跑20次通過。
+- 驗證：Go 16 packages shuffle、app/node coverage 76.2%/81.8%、vet、module verify/tidy、部署腳本與self-tests、Linux amd64/arm64 build全過。
+- 邊界：缺少VPS故障當下journal，未宣稱底層錯誤種類已終裁；Agent/安裝器尚無desired-running恢復狀態欄位，不能把所有degraded直接判為升級失敗，否則會誤傷合法NAT64 degraded。
+
+## 2026-09-13 第二十八輪：watchdog跨程序重啟guard
+
+- 根因：`watchdog.lastRestart`只有程序內記憶體；成功送出systemd重啟後，新程序冷卻歸零，持續故障會每三次probe再次重啟。probe成功清failure的原邏輯正常，`watchdog.restart`成功也不等於資料面恢復。
+- 編輯：`internal/app/watchdog.go`新增版本無關的restart state介面與one-shot-until-recovery狀態機；guard存在時黏著探測原target、失敗禁止重啟、成功才清除並寫`watchdog.recovered`。
+- 建立：`internal/app/watchdog_state_store.go`／test，以schema v1 JSON原子保存node/address/protocol/time，Linux權限0600，嚴格拒絕未知、尾隨與非法資料，Clear冪等。
+- 編輯：`internal/app/paths.go`／test加入`watchdog-restart.json`；`production_build.go`建立file store並傳入watchdog。
+- TDD：跨兩個watchdog實例的RED先證明缺少跨程序契約，再完成狀態機GREEN；file store/DataPaths與production組裝第二輪RED/GREEN；另覆蓋load/save失敗fail closed、重啟命令失敗清guard及target移除清理。
+- 驗證：watchdog測試20次、Go 16 packages readonly+shuffle、app/node coverage 76.5%/81.8%、vet、module verify/tidy、deploy self-tests及Linux amd64/arm64 build全過。LSP/race/netns受本機環境限制，未做遠端CI。
+
+## 2026-09-13 第二十九輪：watchdog兩層綜合健康判定
+
+- 使用者決策：網站目的與代理 listener 兩層都採任一成功即健康；單一局部 target 失敗不得重啟整個服務。
+- 確證：`newProxyWatchdogProbe` 的網站目的層本來就會跑完全部12／14個目的並接受部分成功；問題位於 `watchdog.selectTarget` 黏著失敗 listener，以及重啟門檻只檢查目前 target。
+- TDD RED：一壞一好仍重啟、兩個全壞時第一個三次便提前重啟、跨程序guard只探原target、零targets仍保留guard四項測試均按預期失敗。
+- 編輯：`internal/app/watchdog.go` 改為優先探測 failure count最低的targets；任一成功清空全域evidence並解除guard；全部現存targets各達門檻才重啟；guard全域化且零targets時清除。`internal/app/watchdog_test.go` 更新三項錯誤舊契約並新增動態集合測試。
+- 驗證：watchdog測試20次、Go 16 packages readonly+shuffle、app coverage 76.6%、vet、module verify/tidy、deploy self-tests、Linux amd64/arm64 build全過；本機仍無gopls/gcc/root netns，且未推送遠端CI。

@@ -358,3 +358,33 @@
 - [x] TDD RED：新增`TestCIGofmtCheckAvoidsUnquotedCommandSubstitution`，在`gofmt -l $(git ls-files ...)`上穩定失敗；GREEN改為NUL分隔的`git ls-files -z | xargs -0 --no-run-if-empty gofmt -l`，保留只檢查追蹤檔且安全處理空白路徑。
 - [x] follow-up提交`a1c5a6b`已推送；run `34711454566` 全綠，actionlint、race、漏洞掃描、雙架構build及netns integration均完成遠端驗收。
 - [ ] 非阻擋警告：目前固定SHA所對應的checkout/setup-go/setup-node/artifact actions仍以Node.js 20建置，GitHub runner暫強制改用Node.js 24；後續需查證並升級到原生Node.js 24的major版本及完整SHA。
+
+## 2026-09-13 第二十七輪：更新後首次節點恢復重試
+
+- [x] 更正症狀：`v1.0.9` 更新後第一次服務進程內節點為 stopped／啟動失敗，手動重啟後恢復；官方一鍵與離線安裝器均會先停止舊服務、替換 binary／unit、`daemon-reload` 再啟動新進程，因此不是舊進程熱更新。
+- [x] RCA：啟動期資源對帳與節點恢復錯誤原本只標記 degraded；`Manager.Restore` 單次啟動失敗會留下 stopped，`PersistentManager` 在非空狀態下仍標記 restored，同一進程不再重試；磁碟中的 desired running 狀態保留，所以再次重啟會重新嘗試並可能恢復。
+- [x] TDD RED：`TestServiceRetriesTransientResourceReconciliationBeforeRestoringNodes` 證明資源對帳原本只執行一次；`TestManagerRestoreRetriesTransientRuntimeStartFailure` 證明開機恢復第一次 listener/runtime 錯誤後直接停止；`TestManagerStartRetriesTransientRuntimeFailure` 證明 Web／Agent 手動啟動同樣不重試。
+- [x] GREEN：production 資源對帳、節點恢復與手動啟動均採最多 3 次、間隔 1 秒的有界重試；Restore 以輪次只重試失敗節點，總等待不隨節點數線性成長；context 取消會立即中止，永久錯誤仍回報 degraded 且管理面可用。
+- [x] 邊界測試：覆蓋 Service 重試設定驗證、資源重試取消、Manager Start／Restore 取消、永久錯誤固定 3 次及健康節點不重啟；目標測試連跑 20 次通過。
+- [x] 驗證：Go 16 packages `-shuffle=on` 全綠、`app` coverage 76.2%、`node` coverage 81.8%、`go vet ./...`、module verify/tidy、部署腳本語法與 self-tests、Linux amd64/arm64 build全過。
+- [ ] 根因邊界：沒有故障當下 VPS journal，尚不能終裁第一次失敗是地址 DAD、listener、firewall、資源對帳或狀態儲存；安裝器目前也只辨識整體 healthy/degraded，無法精準區分合法 NAT64 degraded 與 desired-running 節點恢復失敗。
+
+## 2026-09-13 第二十八輪：阻止 watchdog 跨程序重啟循環
+
+- [x] RCA：單次 probe 成功原本會清除 failure；真正缺陷是 `lastRestart` 只存在記憶體。watchdog 執行 `systemctl restart --no-block` 後，新程序冷卻狀態歸零；若底層故障仍在，每三次失敗就會再次重啟。`watchdog.restart success=true` 只代表命令成功，不代表資料面恢復。
+- [x] TDD RED 1：跨兩個 watchdog 實例共用 restart state，舊 API 完全沒有持久狀態契約而編譯失敗；GREEN 新增 one-shot-until-recovery guard，第二個程序持續失敗不重啟，實際恢復清除 guard，新的故障 episode 才能再次重啟。
+- [x] TDD RED 2：DataPaths、file store及production接線不存在；GREEN 新增資料目錄 `watchdog-restart.json`，嚴格schema v1 JSON、原子寫入、Linux `0600`、冪等清除及production組裝。
+- [x] 安全邊界：guard讀取或保存失敗時fail closed；重啟命令失敗時清除guard並保留記憶體cooldown；target移除會清理過期guard；guard只保存node/address/protocol/time，絕不保存帳密。
+- [x] 測試：跨程序重啟鎖定／恢復後新episode、狀態load/save失敗、命令失敗、target移除、file round-trip／clear／invalid／corrupt／trailing data與路徑契約；watchdog目標與邊界測試連跑20次通過。
+- [x] 驗證：Go 16 packages readonly+shuffle全綠、app coverage 76.5%、node coverage 81.8%、vet、module verify/tidy、部署腳本語法與self-tests、Linux amd64/arm64 build全過。
+- [ ] 平台限制：本機未安裝gopls，Windows缺gcc無法執行race，root netns integration需由Linux CI驗證；本輪未提交或推送，尚無遠端CI證據。
+
+## 2026-09-13 第二十九輪：watchdog 兩層綜合健康判定
+
+- [x] 釐清兩層語意：單一 listener 內的 12 個原生 IPv6 目的及條件式 DNS64／NAT64 目的，原本已是全部實際執行且任一成功即健康；真正缺陷在 listener 層，舊狀態機會黏著單一失敗 target，三次後重啟整個服務。
+- [x] 使用者選定 listener 層同樣採「任一成功即整體資料面健康」；單一局部 listener 故障不得重啟，所有目前 running listeners 都各自達到 failure threshold 才能要求全域重啟。
+- [x] TDD RED：`TestWatchdogDoesNotRestartWhenAnyTargetIsHealthy` 觀察到一壞一好仍重啟一次；`TestWatchdogRestartsOnlyAfterEveryTargetReachesThreshold` 觀察到第一個 target 三次失敗便提前重啟；`TestWatchdogRestartGuardClearsWhenAnyTargetRecovers` 觀察到跨程序 guard 連續探測原 target 而未探測健康 target。
+- [x] 動態集合 RED：`TestWatchdogClearsRestartGuardWhenNoTargetsRemain` 證明沒有 running target 時舊 guard 仍殘留，會污染日後新建立的資料面故障 episode。
+- [x] GREEN：target 選擇改為優先最低失敗次數並在同級中使用注入亂數；任一 target 成功即清除全域 failures 與跨程序 guard；只有全部目前 targets 都達門檻才重啟。guard 僅代表全域 episode，保存的 target 只供診斷，不再綁定後續探測；零 targets 時清除 guard。
+- [x] 驗證：全部 watchdog 測試連跑20次、Go 16 packages readonly+shuffle、app coverage 76.6%、vet、module verify/tidy、部署腳本語法與self-tests、Linux amd64/arm64 build全過。
+- [ ] 平台限制：本機未安裝gopls，Windows缺gcc無法執行race，root netns integration需由Linux CI驗證；本輪未提交或推送，尚無真實VPS與遠端CI證據。
