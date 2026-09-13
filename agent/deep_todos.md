@@ -377,7 +377,7 @@
 - [x] 安全邊界：guard讀取或保存失敗時fail closed；重啟命令失敗時清除guard並保留記憶體cooldown；target移除會清理過期guard；guard只保存node/address/protocol/time，絕不保存帳密。
 - [x] 測試：跨程序重啟鎖定／恢復後新episode、狀態load/save失敗、命令失敗、target移除、file round-trip／clear／invalid／corrupt／trailing data與路徑契約；watchdog目標與邊界測試連跑20次通過。
 - [x] 驗證：Go 16 packages readonly+shuffle全綠、app coverage 76.5%、node coverage 81.8%、vet、module verify/tidy、部署腳本語法與self-tests、Linux amd64/arm64 build全過。
-- [ ] 平台限制：本機未安裝gopls，Windows缺gcc無法執行race，root netns integration需由Linux CI驗證；本輪未提交或推送，尚無遠端CI證據。
+- [x] 遠端驗證：修復已納入提交 `929bfd5`，GitHub Actions run `34752131834` 的 actionlint、漏洞掃描、race、Linux amd64/arm64 build 與 root netns integration 全部通過；本機仍未安裝gopls且Windows缺gcc，但對應能力已有Linux CI證據。
 
 ## 2026-09-13 第二十九輪：watchdog 兩層綜合健康判定
 
@@ -387,4 +387,11 @@
 - [x] 動態集合 RED：`TestWatchdogClearsRestartGuardWhenNoTargetsRemain` 證明沒有 running target 時舊 guard 仍殘留，會污染日後新建立的資料面故障 episode。
 - [x] GREEN：target 選擇改為優先最低失敗次數並在同級中使用注入亂數；任一 target 成功即清除全域 failures 與跨程序 guard；只有全部目前 targets 都達門檻才重啟。guard 僅代表全域 episode，保存的 target 只供診斷，不再綁定後續探測；零 targets 時清除 guard。
 - [x] 驗證：全部 watchdog 測試連跑20次、Go 16 packages readonly+shuffle、app coverage 76.6%、vet、module verify/tidy、部署腳本語法與self-tests、Linux amd64/arm64 build全過。
-- [ ] 平台限制：本機未安裝gopls，Windows缺gcc無法執行race，root netns integration需由Linux CI驗證；本輪未提交或推送，尚無真實VPS與遠端CI證據。
+- [x] 遠端驗證：綜合健康狀態機已隨提交 `929bfd5` 推送，GitHub Actions run `34752131834` 全綠；仍待真實VPS長時間故障episode觀察，但race與root netns integration已有Linux CI證據。
+
+## 2026-09-13 第三十輪：啟動恢復與 watchdog 修復推送
+
+- [x] 依英文semantic歷史拆成5個原子提交：`3476c57`節點runtime重試、`267158b`service啟動對帳重試、`929bfd5`watchdog跨程序與綜合健康狀態機、`97c3e9b`驗收契約、`5283b3a`專案紀錄。
+- [x] 推送前以Go 1.25.13 readonly模式重跑16 packages shuffle、module verify/tidy、vet、部署self-tests及Linux amd64/arm64 build，全部通過。
+- [x] `main`已推送至GitHub；run `34752131834` 全綠，包含前端audit/lint/tests/build、actionlint、Go漏洞掃描與race、雙架構build、真實Netlink/nftables network namespace integration。
+- [ ] 非阻擋警告：固定SHA對應的部分官方Actions仍使用Node.js 20 runtime，由GitHub runner暫時強制改用Node.js 24；後續需升級至原生Node.js 24版本。

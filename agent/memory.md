@@ -398,7 +398,7 @@
 - 建立：`internal/app/watchdog_state_store.go`／test，以schema v1 JSON原子保存node/address/protocol/time，Linux權限0600，嚴格拒絕未知、尾隨與非法資料，Clear冪等。
 - 編輯：`internal/app/paths.go`／test加入`watchdog-restart.json`；`production_build.go`建立file store並傳入watchdog。
 - TDD：跨兩個watchdog實例的RED先證明缺少跨程序契約，再完成狀態機GREEN；file store/DataPaths與production組裝第二輪RED/GREEN；另覆蓋load/save失敗fail closed、重啟命令失敗清guard及target移除清理。
-- 驗證：watchdog測試20次、Go 16 packages readonly+shuffle、app/node coverage 76.5%/81.8%、vet、module verify/tidy、deploy self-tests及Linux amd64/arm64 build全過。LSP/race/netns受本機環境限制，未做遠端CI。
+- 驗證：watchdog測試20次、Go 16 packages readonly+shuffle、app/node coverage 76.5%/81.8%、vet、module verify/tidy、deploy self-tests及Linux amd64/arm64 build全過；後續GitHub Actions run `34752131834` 的race與root netns integration亦通過。
 
 ## 2026-09-13 第二十九輪：watchdog兩層綜合健康判定
 
@@ -406,4 +406,11 @@
 - 確證：`newProxyWatchdogProbe` 的網站目的層本來就會跑完全部12／14個目的並接受部分成功；問題位於 `watchdog.selectTarget` 黏著失敗 listener，以及重啟門檻只檢查目前 target。
 - TDD RED：一壞一好仍重啟、兩個全壞時第一個三次便提前重啟、跨程序guard只探原target、零targets仍保留guard四項測試均按預期失敗。
 - 編輯：`internal/app/watchdog.go` 改為優先探測 failure count最低的targets；任一成功清空全域evidence並解除guard；全部現存targets各達門檻才重啟；guard全域化且零targets時清除。`internal/app/watchdog_test.go` 更新三項錯誤舊契約並新增動態集合測試。
-- 驗證：watchdog測試20次、Go 16 packages readonly+shuffle、app coverage 76.6%、vet、module verify/tidy、deploy self-tests、Linux amd64/arm64 build全過；本機仍無gopls/gcc/root netns，且未推送遠端CI。
+- 驗證：watchdog測試20次、Go 16 packages readonly+shuffle、app coverage 76.6%、vet、module verify/tidy、deploy self-tests、Linux amd64/arm64 build全過；後續GitHub Actions run `34752131834` 的race與root netns integration亦通過。
+
+## 2026-09-13 第三十輪：修復提交與遠端CI閉環
+
+- 建立並推送5個原子提交：`3476c57`、`267158b`、`929bfd5`、`97c3e9b`、`5283b3a`；`thoughts/`維持接手前未追蹤狀態，未納入提交。
+- 推送前重跑Go 1.25.13 readonly全套shuffle、module verify/tidy、vet、部署self-tests及Linux雙架構build，全部通過。
+- GitHub Actions run `34752131834` 全綠：前端、actionlint、deploy、Go漏洞掃描與race、amd64/arm64 build、Netlink/nftables disposable network namespace integration均成功；push事件dependency review依契約略過。
+- GitHub僅留下部分官方Actions仍以Node.js 20建置、runner強制Node.js 24的非阻擋警告，待後續升級固定SHA。
