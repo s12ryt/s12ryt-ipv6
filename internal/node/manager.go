@@ -28,7 +28,11 @@ var (
 	ErrPreviousRuntimeCleanup          = errors.New("replacement is running but previous node runtime cleanup failed")
 )
 
-const MaxBatchCreate = 100
+const (
+	MaxBatchCreate                = 100
+	defaultRuntimeStartAttempts   = 3
+	defaultRuntimeStartRetryDelay = time.Second
+)
 
 type Protocol string
 
@@ -208,11 +212,13 @@ type managedNode struct {
 }
 
 type Manager struct {
-	mu       sync.Mutex
-	factory  RuntimeFactory
-	pool     DedicatedPoolCleaner
-	maxNodes int
-	nodes    map[string]*managedNode
+	mu                     sync.Mutex
+	factory                RuntimeFactory
+	pool                   DedicatedPoolCleaner
+	maxNodes               int
+	nodes                  map[string]*managedNode
+	runtimeStartAttempts   int
+	runtimeStartRetryDelay time.Duration
 }
 
 func NewManager(factory RuntimeFactory, pool DedicatedPoolCleaner, maxNodes int) (*Manager, error) {
@@ -222,7 +228,10 @@ func NewManager(factory RuntimeFactory, pool DedicatedPoolCleaner, maxNodes int)
 	if maxNodes <= 0 {
 		return nil, errors.New("maximum node count must be positive")
 	}
-	return &Manager{factory: factory, pool: pool, maxNodes: maxNodes, nodes: make(map[string]*managedNode)}, nil
+	return &Manager{
+		factory: factory, pool: pool, maxNodes: maxNodes, nodes: make(map[string]*managedNode),
+		runtimeStartAttempts: defaultRuntimeStartAttempts, runtimeStartRetryDelay: defaultRuntimeStartRetryDelay,
+	}, nil
 }
 
 func (m *Manager) Create(ctx context.Context, config Config, confirmUnauthenticated bool) (Node, error) {
@@ -428,12 +437,9 @@ func (m *Manager) Start(ctx context.Context, id string) (Node, error) {
 	if current.status == StatusRunning {
 		return nodeSnapshot(current), nil
 	}
-	runtime, err := m.factory.Start(ctx, current.config)
+	runtime, err := m.startRuntimeWithRetry(ctx, current.config)
 	if err != nil {
 		return Node{}, fmt.Errorf("start node: %w", err)
-	}
-	if runtime == nil {
-		return Node{}, errors.New("node runtime factory returned nil")
 	}
 	current.config.Port = runtime.Port()
 	current.runtime = runtime
@@ -639,26 +645,99 @@ func (m *Manager) Restore(ctx context.Context, state State) error {
 		m.nodes[current.Config.ID] = &managedNode{config: cloneConfig(current.Config), status: StatusStopped}
 	}
 
-	var failures []error
+	pending := make([]Node, 0, len(normalized.Nodes))
 	for _, desired := range normalized.Nodes {
 		if desired.Status != StatusRunning {
 			continue
 		}
-		runtime, startErr := m.factory.Start(ctx, desired.Config)
-		if startErr != nil {
-			failures = append(failures, fmt.Errorf("restore node %q: %w", desired.Config.ID, startErr))
-			continue
+		pending = append(pending, desired)
+	}
+
+	latestFailures := make(map[string]error, len(pending))
+restoreAttempts:
+	for attempt := 0; attempt < m.runtimeStartAttempts && len(pending) != 0; attempt++ {
+		retry := make([]Node, 0, len(pending))
+		for _, desired := range pending {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				latestFailures[desired.Config.ID] = errors.Join(latestFailures[desired.Config.ID], ctxErr)
+				retry = append(retry, desired)
+				continue
+			}
+			runtime, startErr := m.factory.Start(ctx, desired.Config)
+			if startErr == nil && runtime == nil {
+				startErr = errors.New("runtime factory returned nil")
+			}
+			if startErr != nil {
+				latestFailures[desired.Config.ID] = startErr
+				retry = append(retry, desired)
+				continue
+			}
+			current := m.nodes[desired.Config.ID]
+			current.config.Port = runtime.Port()
+			current.runtime = runtime
+			current.status = StatusRunning
+			delete(latestFailures, desired.Config.ID)
 		}
-		if runtime == nil {
-			failures = append(failures, fmt.Errorf("restore node %q: runtime factory returned nil", desired.Config.ID))
-			continue
+		pending = retry
+		if len(pending) == 0 || attempt+1 == m.runtimeStartAttempts {
+			break
 		}
-		current := m.nodes[desired.Config.ID]
-		current.config.Port = runtime.Port()
-		current.runtime = runtime
-		current.status = StatusRunning
+		if waitErr := waitForRuntimeStartRetry(ctx, m.runtimeStartRetryDelay); waitErr != nil {
+			for _, desired := range pending {
+				latestFailures[desired.Config.ID] = errors.Join(latestFailures[desired.Config.ID], waitErr)
+			}
+			break restoreAttempts
+		}
+	}
+
+	var failures []error
+	for _, desired := range normalized.Nodes {
+		if failure := latestFailures[desired.Config.ID]; failure != nil {
+			failures = append(failures, fmt.Errorf("restore node %q: %w", desired.Config.ID, failure))
+		}
 	}
 	return errors.Join(failures...)
+}
+
+func (m *Manager) startRuntimeWithRetry(ctx context.Context, config Config) (Runtime, error) {
+	var lastErr error
+	for attempt := 0; attempt < m.runtimeStartAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, errors.Join(lastErr, err)
+		}
+		runtime, err := m.factory.Start(ctx, config)
+		if err == nil && runtime != nil {
+			return runtime, nil
+		}
+		if err == nil {
+			err = errors.New("node runtime factory returned nil")
+		}
+		lastErr = err
+		if attempt+1 == m.runtimeStartAttempts {
+			break
+		}
+		if err := waitForRuntimeStartRetry(ctx, m.runtimeStartRetryDelay); err != nil {
+			return nil, errors.Join(lastErr, err)
+		}
+	}
+	return nil, lastErr
+}
+
+func waitForRuntimeStartRetry(ctx context.Context, delay time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if delay == 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (m *Manager) Shutdown(ctx context.Context) error {

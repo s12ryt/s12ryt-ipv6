@@ -38,20 +38,38 @@ func (r *fakeRuntime) stopCount() int {
 }
 
 type fakeRuntimeFactory struct {
-	mu         sync.Mutex
-	log        []string
-	startError map[string]error
-	runtimes   map[string][]*fakeRuntime
+	mu          sync.Mutex
+	log         []string
+	startError  map[string]error
+	startErrors map[string][]error
+	runtimes    map[string][]*fakeRuntime
+}
+
+type runtimeFactoryFunc func(context.Context, Config) (Runtime, error)
+
+func (f runtimeFactoryFunc) Start(ctx context.Context, config Config) (Runtime, error) {
+	return f(ctx, config)
 }
 
 func newFakeRuntimeFactory() *fakeRuntimeFactory {
-	return &fakeRuntimeFactory{startError: make(map[string]error), runtimes: make(map[string][]*fakeRuntime)}
+	return &fakeRuntimeFactory{
+		startError:  make(map[string]error),
+		startErrors: make(map[string][]error),
+		runtimes:    make(map[string][]*fakeRuntime),
+	}
 }
 
 func (f *fakeRuntimeFactory) Start(_ context.Context, config Config) (Runtime, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.log = append(f.log, "start:"+config.Name)
+	if scripted := f.startErrors[config.Name]; len(scripted) != 0 {
+		err := scripted[0]
+		f.startErrors[config.Name] = scripted[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := f.startError[config.Name]; err != nil {
 		return nil, err
 	}
@@ -330,6 +348,57 @@ func TestManagerRestartPersistsAutomaticallyAllocatedPort(t *testing.T) {
 	}
 }
 
+func TestManagerStartRetriesTransientRuntimeFailure(t *testing.T) {
+	factory := newFakeRuntimeFactory()
+	manager, _ := NewManager(factory, nil, 2)
+	manager.runtimeStartRetryDelay = 0
+	desired := Node{Config: validConfig("node-1", "transient"), Status: StatusStopped}
+	if err := manager.Restore(context.Background(), State{Nodes: []Node{desired}}); err != nil {
+		t.Fatal(err)
+	}
+	factory.startErrors["transient"] = []error{errors.New("listener is still closing"), nil}
+
+	started, err := manager.Start(context.Background(), desired.Config.ID)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if started.Status != StatusRunning {
+		t.Fatalf("started node status = %q", started.Status)
+	}
+	if operations := factory.operations(); !reflect.DeepEqual(operations, []string{"start:transient", "start:transient"}) {
+		t.Fatalf("operations = %#v", operations)
+	}
+}
+
+func TestManagerStartStopsRetryingWhenContextIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	attempts := 0
+	wantErr := errors.New("listener is still closing")
+	factory := runtimeFactoryFunc(func(context.Context, Config) (Runtime, error) {
+		attempts++
+		cancel()
+		return nil, wantErr
+	})
+	manager, _ := NewManager(factory, nil, 2)
+	manager.runtimeStartRetryDelay = time.Hour
+	desired := Node{Config: validConfig("node-1", "transient"), Status: StatusStopped}
+	if err := manager.Restore(context.Background(), State{Nodes: []Node{desired}}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := manager.Start(ctx, desired.Config.ID)
+	if !errors.Is(err, wantErr) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("runtime start attempts = %d, want 1", attempts)
+	}
+	got, _ := manager.Get(desired.Config.ID)
+	if got.Status != StatusStopped {
+		t.Fatalf("node status = %q, want %q", got.Status, StatusStopped)
+	}
+}
+
 func TestManagerStopStartAndDeleteCleanDedicatedPool(t *testing.T) {
 	factory := newFakeRuntimeFactory()
 	cleaner := &fakePoolCleaner{}
@@ -396,6 +465,7 @@ func TestManagerRestoresNodesAndContinuesAfterIndividualStartFailure(t *testing.
 	factory := newFakeRuntimeFactory()
 	factory.startError["broken"] = errors.New("bind failed")
 	manager, _ := NewManager(factory, nil, 4)
+	manager.runtimeStartRetryDelay = 0
 	stopped := Node{Config: validConfig("node-1", "stopped"), Status: StatusStopped}
 	running := Node{Config: validConfig("node-2", "running"), Status: StatusRunning}
 	broken := Node{Config: validConfig("node-3", "broken"), Status: StatusRunning}
@@ -408,8 +478,53 @@ func TestManagerRestoresNodesAndContinuesAfterIndividualStartFailure(t *testing.
 	if len(got) != 3 || got[0].Status != StatusStopped || got[1].Status != StatusRunning || got[2].Status != StatusStopped {
 		t.Fatalf("restored nodes = %#v", got)
 	}
-	if operations := factory.operations(); !reflect.DeepEqual(operations, []string{"start:running", "start:broken"}) {
+	if operations := factory.operations(); !reflect.DeepEqual(operations, []string{"start:running", "start:broken", "start:broken", "start:broken"}) {
 		t.Fatalf("operations = %#v", operations)
+	}
+}
+
+func TestManagerRestoreRetriesTransientRuntimeStartFailure(t *testing.T) {
+	factory := newFakeRuntimeFactory()
+	factory.startErrors["transient"] = []error{errors.New("address is not ready"), nil}
+	manager, _ := NewManager(factory, nil, 2)
+	manager.runtimeStartRetryDelay = 0
+	desired := Node{Config: validConfig("node-1", "transient"), Status: StatusRunning}
+
+	if err := manager.Restore(context.Background(), State{Nodes: []Node{desired}}); err != nil {
+		t.Fatalf("Restore() error = %v", err)
+	}
+	got, found := manager.Get(desired.Config.ID)
+	if !found || got.Status != StatusRunning {
+		t.Fatalf("restored node = %#v, found = %v", got, found)
+	}
+	if operations := factory.operations(); !reflect.DeepEqual(operations, []string{"start:transient", "start:transient"}) {
+		t.Fatalf("operations = %#v", operations)
+	}
+}
+
+func TestManagerRestoreStopsRetryingWhenContextIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	attempts := 0
+	wantErr := errors.New("address is not ready")
+	factory := runtimeFactoryFunc(func(context.Context, Config) (Runtime, error) {
+		attempts++
+		cancel()
+		return nil, wantErr
+	})
+	manager, _ := NewManager(factory, nil, 2)
+	manager.runtimeStartRetryDelay = time.Hour
+	desired := Node{Config: validConfig("node-1", "transient"), Status: StatusRunning}
+
+	err := manager.Restore(ctx, State{Nodes: []Node{desired}})
+	if !errors.Is(err, wantErr) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Restore() error = %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("runtime start attempts = %d, want 1", attempts)
+	}
+	got, _ := manager.Get(desired.Config.ID)
+	if got.Status != StatusStopped {
+		t.Fatalf("node status = %q, want %q", got.Status, StatusStopped)
 	}
 }
 
