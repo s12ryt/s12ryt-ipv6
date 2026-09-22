@@ -437,3 +437,13 @@ GREEN：
 - [x] `go vet ./...` → clean（exit 0，無輸出）。
 - [x] `git diff --numstat`：state.go +38/-0、state_store.go +10/-8、store.go +12/-12（後兩者的刪除行來自 gofmt 欄位對齊重排，已用 `git diff` 逐行確認內容符合預期，無非預期刪除）。
 - [ ] 未執行 git add/commit/push（未經使用者授權）。
+## 2026-09-22 第三十三輪：複核本輪 5 個 commit 並修補 UDP 負快取無上限（TDD）
+
+- [x] 複核（唯讀）：確認 d977471..1c59a99 的 17 檔變更與報告一致；半關閉、UDP 目的地上限、前端 revision、IP 池游標四項皆與敘述相符；generateAutomatic 呼叫點全在寫鎖內；next_addresses 舊檔向後相容。
+- [x] 完整性確認：relayConnections 的 copyHalf 對 upstream（leasedConn）與 client（bufferedConn）都做 CloseWrite 型別斷言，故兩個 wrapper 都必須實作，缺一則半關閉靜默失效。
+- [x] 前端回歸確認：LogsView.tsx 初次載入／篩選重載的 useEffect 仍在，revision effect 為疊加且以 ref 早退防止重複載入。
+- [x] #NEW MEDIUM-HIGH UDP 負快取無上限（本輪複核新發現，屬第三十一輪 #2 修復的殘留缺口）：mapping() 只以 len(a.mappings) 檢查上限，而 dial 全失敗時 mappings 恆為空，故 failures 可被單一 client 以大量相異 (host,port) 無限撐大 → 記憶體無上限。
+  - RED：internal/proxy/udp_relay_test.go 新增 TestUDPAssociationBoundsDestinationFailureCache（上限暫設 2、8 個相異不可達目的地）→ 先 build failed（undefined: maxDestinationFailuresPerAssociation），補變數宣告後行為性失敗：cached destination failures = 8, want at most 2。並新增 TestUDPAssociationKeepsDialingWhenFailureCacheIsFull 鎖定「快取滿不得拒絕健康目的地」。
+  - GREEN：新增 maxDestinationFailuresPerAssociation = 256；抽出 rememberFailure（滿時先 dropExpiredFailures 清 TTL 過期項，仍滿則放棄快取＝best effort）與 dropExpiredFailures；mapping() 失敗路徑改呼叫 rememberFailure。
+- [x] 回歸：go test ./internal/proxy/ -run UDPAssociation -count=1 -v（8 測試全 PASS）；go test ./... -mod=readonly -count=1（16 套件 ok）；go vet ./...（clean）；gofmt -l（無輸出）；npm test（13 檔 78 測試全綠）；npm run lint（clean）。
+- [ ] 未執行 git add/commit/push（未經使用者授權）；本輪檔案變更僅 internal/proxy/udp_relay.go 與 internal/proxy/udp_relay_test.go（合計 104 新增 / 4 刪除）。

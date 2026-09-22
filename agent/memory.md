@@ -432,3 +432,15 @@
 - 工具經驗：`[regex]::Replace` 預設無 Multiline，凡用 `^` 必須加 `(?m)`；`[System.IO.File]::ReadAllLines/WriteAllLines` 可保持 CRLF；gofmt 會因新增欄位而重排對齊（diff 行數會多於實際變更行數，需用 `git diff` 確認）。
 - 測試：`go test ./internal/ipv6resource/ -count=1` → ok（新增 8 測試）；`go test ./... -mod=readonly -count=1` 16 套件全綠；`go vet ./...` clean；`gofmt -l internal/ipv6resource` 無輸出。
 - 未 commit/push。
+## 2026-09-22 第三十三輪：複核已推送的 5 個 commit 並修補 UDP 負快取無上限（TDD）
+
+- 讀取：git status/log/diff（d977471..HEAD）、internal/ipv6resource/walk.go 與 store.go/state.go/state_store.go 的 diff、internal/proxy/half_close.go、udp_relay.go、udp_relay_test.go、dialer.go、http_proxy.go（relayConnections/copyHalf）、mixed_proxy.go（bufferedConn）、web/src/LogsView.tsx、App.tsx diff。
+- 複核結論（6 項通過）：①檔案內容與報告一致 ②generateAutomatic 三個呼叫點都在寫鎖內，occupied/templateReferences 為 caller-holds-lock ③walk 邊界（尾端繞回、前綴耗盡、非法 start 回退最低位址、count<=0 回 nil,nil）④next_addresses 的 yaml 往返與舊檔向後相容 ⑤測試非空洞（RED 留證）⑥無非預期改動。
+- 半關閉修復完整性確認：relayConnections 的 copyHalf("up", upstream=leasedConn) 與 copyHalf("down", client=bufferedConn) 都會對 destination 做 CloseWrite 型別斷言，兩個包裝器都補上 CloseWrite，故 SOCKS5／HTTP／mixed 三條路徑皆覆蓋；leasedConn.Close 的 sync.Once 租約釋放不受影響（CloseWrite 不釋放租約）。
+- 前端複核：LogsView.tsx:48 仍保留 useEffect(() => { void loadLogs() }, [loadLogs]) 負責初次載入與篩選重載；新增的 revision ref effect（53-58 行）為疊加，loadedRevision.current === revision 早退可防止 filter 變更時重複載入，故無回歸。
+- 新缺陷（本輪複核發現）：UDP 負快取無上限。key 為 source+host+port，而 mapping() 只以 len(a.mappings) 檢查上限；dial 全失敗時 mappings 恆為空，故上限永不觸發，單一 client 對大量不可達目的地丟包即可讓 failures 無限成長（記憶體無上限）。屬上一輪「UDP 目的地無上限」修復的殘留缺口。
+- RED：udp_relay_test.go 新增 TestUDPAssociationBoundsDestinationFailureCache（上限暫設 2、8 個相異不可達目的地）→ 先 build failed（undefined: maxDestinationFailuresPerAssociation），補上變數宣告後得到行為性 RED：cached destination failures = 8, want at most 2。另新增 TestUDPAssociationKeepsDialingWhenFailureCacheIsFull 鎖定「快取滿時仍須 dial 健康目的地，不得因其餘目的地失敗而被拒」。
+- GREEN：udp_relay.go 新增 maxDestinationFailuresPerAssociation = 256；抽出 (*udpAssociation).rememberFailure(key)（滿時先 dropExpiredFailures 清 TTL 過期項，仍滿則不寫入＝best effort，避免因他人失敗而拒絕可能可用的目的地）與 (*udpAssociation).dropExpiredFailures()；mapping() 的失敗記錄改呼叫 rememberFailure。
+- 驗證：go test ./internal/proxy/ -run UDPAssociation -count=1 -v → 8 測試全 PASS；go test ./... -mod=readonly -count=1 → 16 套件全 ok；go vet ./... clean；gofmt -l internal/proxy internal/ipv6resource 無輸出；npm test → 13 檔 78 測試全綠；npm run lint clean。
+- 工具經驗：edit 工具每次都會回附整份 README.md（本專案約 10k token），接近 context 上限時應改用 shell 追加檔案以節省 context；write 無法覆寫既有檔案。
+- 狀態：本輪檔案變更僅 internal/proxy/udp_relay.go 與 internal/proxy/udp_relay_test.go（合計 104 新增 / 4 刪除）；未 commit/push（未經使用者授權）。
