@@ -50,6 +50,22 @@ type UDPRelayOptions struct {
 
 var ErrUDPAssociationLimit = errors.New("SOCKS5 UDP association limit reached")
 
+// maxDestinationMappingsPerAssociation bounds how many distinct destinations a
+// single SOCKS5 UDP association may relay to. Each destination opens its own
+// outbound socket, so without a cap a hostile or broken client could exhaust
+// file descriptors even though MaxAssociations bounds the association count.
+var maxDestinationMappingsPerAssociation = 256
+
+// destinationDialFailureTTL caches a failed destination dial so a burst of
+// datagrams for an unreachable destination does not re-dial for every packet.
+// The entry expires so a destination that recovers is retried.
+var destinationDialFailureTTL = 5 * time.Second
+
+var (
+	errUDPDestinationLimit       = errors.New("SOCKS5 UDP association destination limit reached")
+	errUDPDestinationUnavailable = errors.New("SOCKS5 UDP destination temporarily unavailable")
+)
+
 type UDPRelayManager struct {
 	allocator    *PortAllocator
 	dialer       ProxyDialer
@@ -164,6 +180,7 @@ func (m *UDPRelayManager) Associate(ctx context.Context, control net.Conn, reade
 		packet: packet, dialer: m.dialer, idleTimeout: m.idleTimeout,
 		clientIP: client.Addr(), requestedClient: request.RawDestAddr,
 		mappings: make(map[string]*udpMapping),
+		failures: make(map[string]time.Time),
 	}
 	controlClosed := make(chan struct{})
 	go func() {
@@ -200,6 +217,7 @@ type udpAssociation struct {
 
 	mu       sync.Mutex
 	mappings map[string]*udpMapping
+	failures map[string]time.Time
 	traffic  ProxyTraffic
 	asyncErr error
 	wg       sync.WaitGroup
@@ -263,9 +281,26 @@ func (a *udpAssociation) mapping(ctx context.Context, key string, client net.Add
 		a.mu.Unlock()
 		return mapping, nil
 	}
+	if failedAt, failed := a.failures[key]; failed {
+		if time.Since(failedAt) < destinationDialFailureTTL {
+			a.mu.Unlock()
+			return nil, errUDPDestinationUnavailable
+		}
+		delete(a.failures, key)
+	}
+	if len(a.mappings) >= maxDestinationMappingsPerAssociation {
+		a.mu.Unlock()
+		return nil, errUDPDestinationLimit
+	}
 	a.mu.Unlock()
 	conn, metadata, err := a.dialer.Dial(ctx, "udp", host, port)
 	if err != nil {
+		a.mu.Lock()
+		if a.failures == nil {
+			a.failures = make(map[string]time.Time)
+		}
+		a.failures[key] = time.Now()
+		a.mu.Unlock()
 		return nil, err
 	}
 	if conn == nil {
@@ -279,6 +314,7 @@ func (a *udpAssociation) mapping(ctx context.Context, key string, client net.Add
 		return existing, nil
 	}
 	a.mappings[key] = mapping
+	delete(a.failures, key)
 	if !a.traffic.Metadata.Source.IsValid() {
 		a.traffic.Metadata = metadata
 	}
@@ -346,6 +382,7 @@ func (a *udpAssociation) closeMappings() {
 		delete(a.mappings, key)
 		_ = mapping.conn.Close()
 	}
+	a.failures = nil
 	a.mu.Unlock()
 	a.wg.Wait()
 }
