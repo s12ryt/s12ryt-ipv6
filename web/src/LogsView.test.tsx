@@ -133,4 +133,25 @@ describe('LogsView', () => {
     await user.click(screen.getByRole('button', { name: '結束即時日誌' }))
     expect(close).toHaveBeenCalledTimes(1)
   })
+
+  it('在 revision 變更時重新載入日誌但不重置即時模式', async () => {
+    const user = userEvent.setup()
+    const get = vi.fn().mockResolvedValue(events)
+    const close = vi.fn()
+    const openLogStream = vi.fn().mockImplementation(() => close)
+    const client = { get, mutate: vi.fn(), openLogStream } as Pick<ApiClient, 'get' | 'mutate' | 'openLogStream'>
+    const { rerender } = render(<LogsView mode="advanced" revision={1} client={client} statistics={statistics} onStatisticsChange={vi.fn()} />)
+
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(1))
+    await user.click(screen.getByRole('button', { name: '即時日誌' }))
+    expect(openLogStream).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: '結束即時日誌' })).toBeInTheDocument()
+
+    rerender(<LogsView mode="advanced" revision={2} client={client} statistics={statistics} onStatisticsChange={vi.fn()} />)
+
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole('button', { name: '結束即時日誌' })).toBeInTheDocument()
+    expect(openLogStream).toHaveBeenCalledTimes(1)
+    expect(close).not.toHaveBeenCalled()
+  })
 })

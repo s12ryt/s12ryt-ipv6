@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useState } from 'react'
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { Filter, RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
 import { APIError, ApiClient, LogEvent, LogKind, StatisticsSnapshot } from './api'
 import type { PanelMode } from './panelMode'
@@ -7,9 +7,10 @@ import { ModalDialog } from './ModalDialog'
 type LogsClient = Pick<ApiClient, 'get' | 'mutate' | 'openLogStream'>
 type ConfirmAction = { kind: 'logs' } | { kind: 'stats'; node: string } | null
 
-export function LogsView({ mode, client, statistics, onStatisticsChange }: {
+export function LogsView({ mode, client, revision, statistics, onStatisticsChange }: {
   mode: PanelMode
   client: LogsClient
+  revision?: number
   statistics: StatisticsSnapshot
   onStatisticsChange: (statistics: StatisticsSnapshot) => void
 }) {
@@ -45,6 +46,16 @@ export function LogsView({ mode, client, statistics, onStatisticsChange }: {
   }, [client, logPath])
 
   useEffect(() => { void loadLogs() }, [loadLogs])
+
+  // The parent bumps `revision` when the stored logs change outside this view (for
+  // example another administrator or the agent cleared them). Reloading here instead
+  // of remounting the view keeps the live-stream toggle, filters and dialog state.
+  const loadedRevision = useRef(revision)
+  useEffect(() => {
+    if (loadedRevision.current === revision) return
+    loadedRevision.current = revision
+    void loadLogs()
+  }, [loadLogs, revision])
 
   useEffect(() => {
     if (!live) return

@@ -219,7 +219,7 @@ export function App() {
         {view === 'nodes' && <NodesView mode={panelMode} client={client} nodes={data.nodes} resources={data.resources} onChange={(nodes) => setData({ ...data, nodes })} />}
         {view === 'resources' && <ResourcesView mode={panelMode} client={client} resources={data.resources} onChange={(resources) => setData({ ...data, resources })} />}
         {view === 'network' && <NetworkView mode={panelMode} client={client} overview={data.overview} onChange={(overview) => setData({ ...data, overview })} onPasswordChanged={() => { setData(null); setPhase('login') }} />}
-        {view === 'logs' && <LogsView key={logRevision} mode={panelMode} client={client} statistics={data.statistics} onStatisticsChange={(statistics) => setData({ ...data, statistics })} />}
+        {view === 'logs' && <LogsView revision={logRevision} mode={panelMode} client={client} statistics={data.statistics} onStatisticsChange={(statistics) => setData({ ...data, statistics })} />}
       </main>
     </div>
   )
