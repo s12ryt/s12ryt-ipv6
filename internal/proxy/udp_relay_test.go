@@ -184,3 +184,69 @@ func TestUDPAssociationLimitsDestinationMappings(t *testing.T) {
 		t.Fatalf("dial attempts for rejected destination = %d, want 0", got)
 	}
 }
+
+// TestUDPAssociationBoundsDestinationFailureCache verifies that spraying datagrams
+// at many distinct unreachable destinations cannot grow the negative dial cache
+// without bound. The mapping table stays empty because every dial fails, so the
+// mapping limit alone does not bound this map; the cache needs its own bound.
+func TestUDPAssociationBoundsDestinationFailureCache(t *testing.T) {
+	restore := maxDestinationFailuresPerAssociation
+	maxDestinationFailuresPerAssociation = 2
+	defer func() { maxDestinationFailuresPerAssociation = restore }()
+
+	dialer := newCountingUDPDialer()
+	association := newTestUDPAssociation(dialer)
+	defer association.closeMappings()
+
+	ctx := context.Background()
+	for index := 1; index <= 8; index++ {
+		host := "192.0.2." + strconv.Itoa(index)
+		dialer.setFailure("udp", host, 53, true)
+		if _, err := association.mapping(
+			ctx, testUDPKey(host, 53), testUDPClientAddr(),
+			testUDPDestination(host, 53), host, 53,
+		); err == nil {
+			t.Fatalf("mapping %s error = nil, want dial failure", host)
+		}
+	}
+
+	association.mu.Lock()
+	cached := len(association.failures)
+	association.mu.Unlock()
+	if cached > maxDestinationFailuresPerAssociation {
+		t.Fatalf("cached destination failures = %d, want at most %d", cached, maxDestinationFailuresPerAssociation)
+	}
+}
+
+// TestUDPAssociationKeepsDialingWhenFailureCacheIsFull verifies the failure cache is
+// best effort: once full, an unrelated destination must still be dialed instead of
+// being refused because other destinations failed.
+func TestUDPAssociationKeepsDialingWhenFailureCacheIsFull(t *testing.T) {
+	restore := maxDestinationFailuresPerAssociation
+	maxDestinationFailuresPerAssociation = 1
+	defer func() { maxDestinationFailuresPerAssociation = restore }()
+
+	dialer := newCountingUDPDialer()
+	dialer.setFailure("udp", "192.0.2.1", 53, true)
+	association := newTestUDPAssociation(dialer)
+	defer association.closeMappings()
+	defer dialer.closeAll()
+
+	ctx := context.Background()
+	if _, err := association.mapping(
+		ctx, testUDPKey("192.0.2.1", 53), testUDPClientAddr(),
+		testUDPDestination("192.0.2.1", 53), "192.0.2.1", 53,
+	); err == nil {
+		t.Fatal("mapping of failing destination error = nil, want dial failure")
+	}
+
+	if _, err := association.mapping(
+		ctx, testUDPKey("192.0.2.2", 53), testUDPClientAddr(),
+		testUDPDestination("192.0.2.2", 53), "192.0.2.2", 53,
+	); err != nil {
+		t.Fatalf("mapping of healthy destination error = %v, want success", err)
+	}
+	if got := dialer.dialCount("udp", "192.0.2.2", 53); got != 1 {
+		t.Fatalf("dial attempts for healthy destination = %d, want 1", got)
+	}
+}

@@ -56,6 +56,13 @@ var ErrUDPAssociationLimit = errors.New("SOCKS5 UDP association limit reached")
 // file descriptors even though MaxAssociations bounds the association count.
 var maxDestinationMappingsPerAssociation = 256
 
+// maxDestinationFailuresPerAssociation bounds the negative dial cache so a client
+// that sprays datagrams at a large number of unreachable destinations cannot grow
+// the association's memory without bound. The mapping limit above does not bound
+// this cache: every failed dial leaves the mapping table empty, so the mapping
+// check never trips while the failure cache keeps growing.
+var maxDestinationFailuresPerAssociation = 256
+
 // destinationDialFailureTTL caches a failed destination dial so a burst of
 // datagrams for an unreachable destination does not re-dial for every packet.
 // The entry expires so a destination that recovers is retried.
@@ -296,10 +303,7 @@ func (a *udpAssociation) mapping(ctx context.Context, key string, client net.Add
 	conn, metadata, err := a.dialer.Dial(ctx, "udp", host, port)
 	if err != nil {
 		a.mu.Lock()
-		if a.failures == nil {
-			a.failures = make(map[string]time.Time)
-		}
-		a.failures[key] = time.Now()
+		a.rememberFailure(key)
 		a.mu.Unlock()
 		return nil, err
 	}
@@ -322,6 +326,36 @@ func (a *udpAssociation) mapping(ctx context.Context, key string, client net.Add
 	a.mu.Unlock()
 	go a.readMapping(key, mapping)
 	return mapping, nil
+}
+
+// rememberFailure records a failed destination dial. The caller must hold the
+// association lock.
+//
+// The cache is best effort: when it is full, expired entries are dropped first and,
+// if none can be dropped, the failure is not cached at all. A full cache therefore
+// only costs extra dials; it never refuses a destination that might still work.
+func (a *udpAssociation) rememberFailure(key string) {
+	if a.failures == nil {
+		a.failures = make(map[string]time.Time)
+	}
+	if len(a.failures) >= maxDestinationFailuresPerAssociation {
+		a.dropExpiredFailures()
+		if len(a.failures) >= maxDestinationFailuresPerAssociation {
+			return
+		}
+	}
+	a.failures[key] = time.Now()
+}
+
+// dropExpiredFailures removes negative cache entries whose TTL has elapsed so a
+// destination that recovers is retried. The caller must hold the association lock.
+func (a *udpAssociation) dropExpiredFailures() {
+	now := time.Now()
+	for key, failedAt := range a.failures {
+		if now.Sub(failedAt) >= destinationDialFailureTTL {
+			delete(a.failures, key)
+		}
+	}
 }
 
 func (a *udpAssociation) readMapping(key string, mapping *udpMapping) {
