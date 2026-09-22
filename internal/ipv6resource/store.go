@@ -60,14 +60,19 @@ type Store struct {
 	addresses map[netip.Addr]*CanonicalAddress
 	pools     map[string]*Pool
 	nextBatch uint64
+	// nextAddresses keeps, per template prefix, the next candidate address for
+	// automatic generation so successive refreshes walk forward through the prefix
+	// instead of reusing addresses that a completed drain just released.
+	nextAddresses map[string]netip.Addr
 }
 
 func NewStore() *Store {
 	return &Store{
-		templates: make(map[string]PrefixTemplate),
-		fixed:     make(map[string]FixedAddress),
-		addresses: make(map[netip.Addr]*CanonicalAddress),
-		pools:     make(map[string]*Pool),
+		templates:     make(map[string]PrefixTemplate),
+		fixed:         make(map[string]FixedAddress),
+		addresses:     make(map[netip.Addr]*CanonicalAddress),
+		pools:         make(map[string]*Pool),
+		nextAddresses: make(map[string]netip.Addr),
 	}
 }
 
@@ -95,6 +100,7 @@ func (s *Store) DeleteTemplate(name string) error {
 	if len(refs) > 0 {
 		return fmt.Errorf("template %q is referenced by %v", name, refs)
 	}
+	delete(s.nextAddresses, s.templates[name].Prefix.String())
 	delete(s.templates, name)
 	return nil
 }
@@ -176,10 +182,7 @@ func (s *Store) CreatePool(name string, kind PoolKind, templateName string, capa
 	if len(pinned) > capacity {
 		return nil, errors.New("pinned addresses exceed pool capacity")
 	}
-	automatic, err := GenerateAddresses(template.Prefix, capacity-len(pinned), s.occupied())
-	if capacity == len(pinned) {
-		automatic, err = nil, nil
-	}
+	automatic, err := s.generateAutomatic(templateName, capacity-len(pinned))
 	if err != nil {
 		return nil, err
 	}
@@ -207,10 +210,7 @@ func (s *Store) RefreshPool(name string) (*Pool, error) {
 	}
 	template := s.templates[pool.Template]
 	automaticCount := pool.Capacity - len(pool.Pinned)
-	newAutomatic, err := GenerateAddresses(template.Prefix, automaticCount, s.occupied())
-	if automaticCount == 0 {
-		newAutomatic, err = nil, nil
-	}
+	newAutomatic, err := s.generateAutomatic(pool.Template, automaticCount)
 	if err != nil {
 		return nil, err
 	}

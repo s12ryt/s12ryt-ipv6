@@ -15,6 +15,9 @@ type State struct {
 	Addresses []CanonicalAddress `yaml:"addresses"`
 	Pools     []Pool             `yaml:"pools"`
 	NextBatch uint64             `yaml:"next_batch"`
+	// NextAddresses keeps the walk position per template prefix. State files written
+	// before this field existed start generation at the lowest available address.
+	NextAddresses map[string]netip.Addr `yaml:"next_addresses,omitempty"`
 }
 
 func (s *Store) State() State {
@@ -43,6 +46,7 @@ func (s *Store) ReplaceState(state State) error {
 	s.addresses = replacement.addresses
 	s.pools = replacement.pools
 	s.nextBatch = replacement.nextBatch
+	s.nextAddresses = replacement.nextAddresses
 	return nil
 }
 
@@ -80,6 +84,12 @@ func (s *Store) stateLocked() State {
 		state.Pools = append(state.Pools, *clonePool(pool))
 	}
 	sort.Slice(state.Pools, func(i, j int) bool { return state.Pools[i].Name < state.Pools[j].Name })
+	if len(s.nextAddresses) > 0 {
+		state.NextAddresses = make(map[string]netip.Addr, len(s.nextAddresses))
+		for prefix, address := range s.nextAddresses {
+			state.NextAddresses[prefix] = address
+		}
+	}
 	return state
 }
 
@@ -97,6 +107,34 @@ func buildStoreFromState(state State) (*Store, error) {
 		if err := store.AddTemplate(template); err != nil {
 			return nil, err
 		}
+	}
+
+	for key, address := range state.NextAddresses {
+		prefix, err := netip.ParsePrefix(key)
+		if err != nil {
+			return nil, fmt.Errorf("next address key %q is not a valid prefix", key)
+		}
+		prefix = prefix.Masked()
+		if prefix.String() != key {
+			return nil, fmt.Errorf("next address key %q is not a canonical prefix", key)
+		}
+		address = address.Unmap()
+		if !address.IsValid() || !address.Is6() || address.Is4In6() || !prefix.Contains(address) {
+			return nil, fmt.Errorf("next address %s is outside prefix %s", address, key)
+		}
+		known := false
+		for _, template := range store.templates {
+			if template.Prefix == prefix {
+				known = true
+				break
+			}
+		}
+		if !known {
+			// A walk position without a template can never be used; ignore it so a stale
+			// entry cannot make the resource state unloadable.
+			continue
+		}
+		store.nextAddresses[key] = address
 	}
 
 	for _, address := range state.Addresses {

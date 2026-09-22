@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,12 +16,13 @@ import (
 const stateSchemaVersion = 1
 
 type stateFile struct {
-	SchemaVersion int                `yaml:"schema_version"`
-	Templates     []PrefixTemplate   `yaml:"templates"`
-	Fixed         []FixedAddress     `yaml:"fixed"`
-	Addresses     []CanonicalAddress `yaml:"addresses"`
-	Pools         []Pool             `yaml:"pools"`
-	NextBatch     uint64             `yaml:"next_batch"`
+	SchemaVersion int                   `yaml:"schema_version"`
+	Templates     []PrefixTemplate      `yaml:"templates"`
+	Fixed         []FixedAddress        `yaml:"fixed"`
+	Addresses     []CanonicalAddress    `yaml:"addresses"`
+	Pools         []Pool                `yaml:"pools"`
+	NextBatch     uint64                `yaml:"next_batch"`
+	NextAddresses map[string]netip.Addr `yaml:"next_addresses,omitempty"`
 }
 
 type FileStateStore struct {
@@ -118,13 +120,13 @@ func stateToFile(state State) stateFile {
 	return stateFile{
 		SchemaVersion: stateSchemaVersion,
 		Templates:     state.Templates, Fixed: state.Fixed, Addresses: state.Addresses,
-		Pools: state.Pools, NextBatch: state.NextBatch,
+		Pools: state.Pools, NextBatch: state.NextBatch, NextAddresses: state.NextAddresses,
 	}
 }
 
 func stateFromFile(file stateFile) State {
 	return State{
 		Templates: file.Templates, Fixed: file.Fixed, Addresses: file.Addresses,
-		Pools: file.Pools, NextBatch: file.NextBatch,
+		Pools: file.Pools, NextBatch: file.NextBatch, NextAddresses: file.NextAddresses,
 	}
 }
