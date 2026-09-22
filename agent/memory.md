@@ -414,3 +414,21 @@
 - 推送前重跑Go 1.25.13 readonly全套shuffle、module verify/tidy、vet、部署self-tests及Linux雙架構build，全部通過。
 - GitHub Actions run `34752131834` 全綠：前端、actionlint、deploy、Go漏洞掃描與race、amd64/arm64 build、Netlink/nftables disposable network namespace integration均成功；push事件dependency review依契約略過。
 - GitHub僅留下部分官方Actions仍以Node.js 20建置、runner強制Node.js 24的非阻擋警告，待後續升級固定SHA。
+
+## 2026-09-22 第三十一輪：稽核確認缺陷修復（TDD）
+
+- 讀取：唯讀稽核 Go `cmd/`+`internal/` 全部生產檔與 `web/src` 15 檔（含 13 個既有測試檔）；另 grep `CloseWrite`、`publishOperationsEvent(`、`publishResourceEvent(` 確認呼叫點與事件資源值。
+- 新增檔案：`internal/proxy/half_close.go`（CloseWrite 轉發）、`internal/proxy/half_close_test.go`（2 測試）、`internal/proxy/udp_relay_test.go`（3 測試）。
+- 修改檔案：`internal/proxy/udp_relay.go`（+37/-0）、`web/src/App.tsx`（+1/-1）、`web/src/LogsView.tsx`（+13/-2）、`web/src/LogsView.test.tsx`（+21）。
+- 檔案重建：`web/src/LogsView.tsx` 因 `write` 工具拒絕覆寫既有檔案，先 `Remove-Item` 再 `write`；事後以 `git diff --numstat` 確認僅預期變更。`web/dist` 由 `npm run build` 重建（未被 git 追蹤，不入版控）。
+- 測試/驗證證據：Go 16 套件 ok、`go vet` clean、`go build ./...` exit 0；前端 13 檔 78 測試全綠、eslint clean、`tsc -b && vite build` 成功。
+- 記憶點：`edit` 工具會夾帶整份 README.md（成本高）而 `write` 不會；`write` 無法覆寫既有檔案；`bash`(pwsh) 適合檔案操作與跑測試，且每個 shell call 都要明確 timeout。
+- 狀態：本輪未 commit/push；`git status` 顯示 4 個已追蹤檔修改 + 3 個新檔未追蹤（另有既有未追蹤的 `thoughts/`）。
+## 2026-09-22 第三十二輪：IP 池游標（讀寫紀錄）
+- 讀取：internal/ipv6resource/store.go、state.go、state_store.go、template.go、random.go、store_test.go、state_test.go、template_test.go、random_test.go。
+- 新增：internal/ipv6resource/walk.go、walk_test.go、generate_walk_test.go。
+- 修改：internal/ipv6resource/store.go、state.go、state_store.go（以 pwsh line-based Insert-After/Insert-Before + `(?m)` regex Replace-Pattern 腳本完成，每個 pattern 找不到即 throw；共 14 處 + 1 處補 import）。
+- 新增持久化欄位：resources.yaml 的 `next_addresses`（`map[string]netip.Addr`、omitempty；舊檔缺欄位 → 從最低位址開始，向後相容）。
+- 工具經驗：`[regex]::Replace` 預設無 Multiline，凡用 `^` 必須加 `(?m)`；`[System.IO.File]::ReadAllLines/WriteAllLines` 可保持 CRLF；gofmt 會因新增欄位而重排對齊（diff 行數會多於實際變更行數，需用 `git diff` 確認）。
+- 測試：`go test ./internal/ipv6resource/ -count=1` → ok（新增 8 測試）；`go test ./... -mod=readonly -count=1` 16 套件全綠；`go vet ./...` clean；`gofmt -l internal/ipv6resource` 無輸出。
+- 未 commit/push。

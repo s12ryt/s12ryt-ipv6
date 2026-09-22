@@ -395,3 +395,45 @@
 - [x] 推送前以Go 1.25.13 readonly模式重跑16 packages shuffle、module verify/tidy、vet、部署self-tests及Linux amd64/arm64 build，全部通過。
 - [x] `main`已推送至GitHub；run `34752131834` 全綠，包含前端audit/lint/tests/build、actionlint、Go漏洞掃描與race、雙架構build、真實Netlink/nftables network namespace integration。
 - [ ] 非阻擋警告：固定SHA對應的部分官方Actions仍使用Node.js 20 runtime，由GitHub runner暫時強制改用Node.js 24；後續需升級至原生Node.js 24版本。
+
+## 2026-09-22 第三十一輪：稽核三項確認缺陷修復（TDD）
+
+- [x] 先完成全庫唯讀稽核（Go 16 套件 + web/src 15 檔），使用者指示「修吧」後以 TDD（先 RED 後 GREEN）修復 3 項確認缺陷；其餘 NIT 未動。
+- [x] #1 MEDIUM proxy 半關閉失效：`internal/proxy/http_proxy.go:263` 對 destination 做 `CloseWrite()` 型別斷言，但 `bufferedConn`（mixed client 端）與 `leasedConn`（所有協定的 upstream 端）都只內嵌 `net.Conn` 介面、只額外實作 `Read`/`Close`，方法集不含 `CloseWrite` → 半關閉被默默丟棄，等 EOF 的 peer 會卡到 `TunnelIdleTimeout`（預設 0＝不設逾時）或 ctx 取消。
+  - RED：新增 `internal/proxy/half_close_test.go`（`TestBufferedConnSupportsCloseWrite`、`TestLeasedConnSupportsCloseWrite`，以 `newTCPConnPair` 驗證 peer 收到 EOF）→ 兩者執行期 FAIL。
+  - GREEN：新增 `internal/proxy/half_close.go`（`closeWriter` 介面、`forwardCloseWrite(net.Conn) error` 對不支援的 transport 回 nil、`(*bufferedConn).CloseWrite()`、`(*leasedConn).CloseWrite()`）。
+- [x] #2 MINOR-MEDIUM UDP 關聯目的地無上限：`internal/proxy/udp_relay.go` 每個新目的地都會 dial 一個 socket，失敗只 continue（下一包重撥），`mappings` 僅在讀寫錯或 idle timeout（5m）回收 → 惡意/異常 client 可耗盡 FD。
+  - RED：新增 `internal/proxy/udp_relay_test.go`（3 測試：失敗快取、TTL 過期後重試、目的地數上限）→ 因 `destinationDialFailureTTL`/`maxDestinationMappingsPerAssociation` 未定義而 build failed。
+  - GREEN：新增 `maxDestinationMappingsPerAssociation = 256`、`destinationDialFailureTTL = 5s`、`errUDPDestinationLimit`、`errUDPDestinationUnavailable`；`udpAssociation` 加 `failures map[string]time.Time`；`mapping()` 先查既有 mapping → 負快取 → 上限檢查 → 才 dial，失敗寫入負快取、成功刪除；`closeMappings()` 清空 failures。（`git diff --numstat`：37 新增 / 0 刪除）
+- [x] #3 LOW 前端日誌重掛：後端 `internal/admin/operations.go` 清日誌後發布 `Resource:"log"` 事件，`web/src/App.tsx` 的 `refresh()` 會 `setLogRevision(+1)`，而 LogsView 以 `key={logRevision}` 掛載 → 每次清除全部日誌都整檔重掛，即時日誌被關閉、篩選與對話框狀態重置。
+  - RED：`web/src/LogsView.test.tsx` 新增「在 revision 變更時重新載入日誌但不重置即時模式」→ 1 failed | 5 passed。
+  - GREEN：`App.tsx` 改傳 `revision={logRevision}`（移除 key）；`LogsView.tsx` 新增可選 `revision?: number` prop，以 `loadedRevision` ref 的 `useEffect` 在 revision 變更時呼叫 `loadLogs()`（不重掛、不重複載入、revision 未變時早退）。
+- [x] 回歸：`go test ./... -mod=readonly -count=1`（16 套件全 ok）、`go vet ./...`（clean）、`go build ./...`（exit 0）、`gofmt -l internal\proxy`（無輸出）。
+- [x] 回歸：`npm test`（13 檔 / 78 測試全綠）、`npm run lint`（clean）、`npm run build`（tsc -b && vite build 成功，並重建被 Go embed 的 `web/dist`）。
+- [ ] 未執行 git add/commit/push（未經使用者授權）。
+## 2026-09-22 第三十二輪：IP 池游標（避免 drain 完成後回收重用位址）
+
+使用者需求（先以 question 工具確認方向，問答與驗收標準已寫入 agent/question.md）：
+- 循序游標往前推進（每前綴持久化「下一個候選位置」）。
+- 游標要持久化（跨服務重啟保留）。
+
+問題：`GenerateAddresses` 永遠從前綴最低位址開始，只跳過「目前仍存在」的位址；drain 完成後舊位址自 store 移除，下一次 refresh 又取回剛釋放的位址（實務上 A/B 交替）。
+
+RED（測試先寫、先失敗）：
+- [x] `internal/ipv6resource/walk_test.go`（5 測試，只用既有識別字）→ `go test ./internal/ipv6resource/ -count=1` 得到 3 個預期失敗：
+      TestRefreshPoolAdvancesAfterDrainCompletes / TestRefreshPoolWalkPositionSurvivesStateRoundTrip / TestFileStateStorePersistsWalkPosition，
+      失敗訊息皆為 `pool "walk-pool" active = [2001:db8:1:: 2001:db8:1::1], want [2001:db8:1::4 2001:db8:1::5]`（證實現行會重用剛釋放的位址）。
+- [x] `internal/ipv6resource/generate_walk_test.go`（3 測試）→ build failed `undefined: GenerateAddressesFrom`（4 個呼叫點）。
+
+GREEN：
+- [x] 新增 `internal/ipv6resource/walk.go`：`GenerateAddressesFrom(prefix, count, occupied, start)`（從 start 往前掃、跳過 occupied、到前綴尾端繞回開頭、掃完一輪不足則回 exhaustion 錯誤）、`(*Store).generateAutomatic(templateName, count)`、`(*Store).advanceNextAddress(prefix, generated)`（記錄 last+1，超出前綴則繞回 prefix.Addr()）。
+- [x] `store.go`：Store 新增 `nextAddresses map[string]netip.Addr`、NewStore 初始化、CreatePool/RefreshPool 改用 `s.generateAutomatic(...)`（並移除兩個殘留的 `if ... { x, err = nil, nil }` 區塊）、DeleteTemplate 同步刪除游標。
+- [x] `state.go`：State 新增 `NextAddresses map[string]netip.Addr`（yaml `next_addresses,omitempty`）、stateLocked 複製、ReplaceState 同步、buildStoreFromState 驗證游標（非 canonical prefix 或超出前綴 → 錯誤；找不到對應 template → 容忍忽略，避免舊檔無法載入）。
+- [x] `state_store.go`：stateFile 新增同欄位、stateToFile/stateFromFile 轉換、補 `net/netip` import。
+- [x] `gofmt -w internal/ipv6resource`（`gofmt -l` 無輸出）→ `go test ./internal/ipv6resource/ -count=1` → `ok github.com/s12ryt/s12ryt-ipv6/internal/ipv6resource 0.942s`（8 個新測試 + 既有全部測試）。
+
+回歸：
+- [x] `go test ./... -mod=readonly -count=1` → 16 套件全部 ok（cmd 2.765s / admin 2.882s / app 11.252s / auth 0.055s / cicheck 0.096s / config 1.451s / dns64 4.777s / eventlog 2.299s / firewall 1.439s / ipv6resource 4.260s / network 10.853s / node 10.221s / policy 0.040s / proxy 11.471s / secret 0.246s / stats 0.049s）。
+- [x] `go vet ./...` → clean（exit 0，無輸出）。
+- [x] `git diff --numstat`：state.go +38/-0、state_store.go +10/-8、store.go +12/-12（後兩者的刪除行來自 gofmt 欄位對齊重排，已用 `git diff` 逐行確認內容符合預期，無非預期刪除）。
+- [ ] 未執行 git add/commit/push（未經使用者授權）。
